@@ -4,49 +4,75 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const passport = require("passport");
 const session = require("express-session");
+const MongoStore = require("connect-mongo");
 const User = require("./models/User");
 const authRoutes = require("./routes/auth");
-const connectDB = require("./config/db")
+const connectDB = require("./config/db");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-app.use(session({ secret: "secret", resave: false, saveUninitialized: true }));
+
+// MongoDB Connection
+connectDB();
+
+// Session Middleware (Fixing MemoryStore Warning)
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "default_secret",
+    resave: false,
+    saveUninitialized: true,
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGO_URI,
+      collectionName: "sessions",
+    }),
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+      maxAge: 1000 * 60 * 60 * 24, // 1 day
+    },
+  })
+);
+
 app.use(passport.initialize());
 app.use(passport.session());
 
 app.use("/auth", authRoutes);
 
-connectDB();
-
+// Google OAuth Strategy
 const { Strategy: GoogleStrategy } = require("passport-google-oauth20");
 
-passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: "/auth/google/callback"
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ email: profile.emails[0].value });
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: "/auth/google/callback",
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ email: profile.emails[0].value });
 
-    if (!user) {
-      user = new User({
-        email: profile.emails[0].value,
-        googleToken: accessToken,
-        devices: [],
-      });
-      await user.save();
-    } else {
-      user.googleToken = accessToken;
-      await user.save();
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            googleToken: accessToken,
+            devices: [],
+          });
+          await user.save();
+        } else {
+          user.googleToken = accessToken;
+          await user.save();
+        }
+
+        done(null, user);
+      } catch (error) {
+        console.error("OAuth error:", error);
+        done(error, null);
+      }
     }
-
-    done(null, user);
-  } catch (error) {
-    console.error("OAuth error:", error);
-    done(error, null);
-  }
-}));
+  )
+);
 
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
@@ -61,10 +87,13 @@ passport.deserializeUser(async (id, done) => {
 // OAuth Route (Device B Login)
 app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
-app.get("/auth/google/callback", passport.authenticate("google", { failureRedirect: "/device-b" }),
+app.get(
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/device-b" }),
   async (req, res) => {
     res.redirect(`/device-b-success?email=${req.user.email}`);
-  });
+  }
+);
 
 // Assign Device A
 app.post("/assign-device", async (req, res) => {
@@ -75,7 +104,7 @@ app.post("/assign-device", async (req, res) => {
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const existingDevice = user.devices.find(d => d.deviceId === deviceId);
+    const existingDevice = user.devices.find((d) => d.deviceId === deviceId);
     if (!existingDevice) {
       user.devices.push({ deviceId, name });
       await user.save();
@@ -129,7 +158,7 @@ app.post("/remove-device", async (req, res) => {
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    user.devices = user.devices.filter(d => d.deviceId !== deviceId);
+    user.devices = user.devices.filter((d) => d.deviceId !== deviceId);
     await user.save();
 
     res.json({ message: "Device removed successfully", devices: user.devices });
@@ -139,4 +168,6 @@ app.post("/remove-device", async (req, res) => {
   }
 });
 
-app.listen(5000, () => console.log("Server running on port 5000"));
+// Dynamic Port Listener
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
