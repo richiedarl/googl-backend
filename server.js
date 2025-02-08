@@ -92,7 +92,7 @@ app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/device-b" }),
   async (req, res) => {
-    res.redirect(`/device-b-success?email=${req.user.email}`);
+    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${req.user.email}`);
   }
 );
 
