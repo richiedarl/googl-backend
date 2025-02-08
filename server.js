@@ -43,37 +43,36 @@ app.use("/auth", authRoutes);
 const { Strategy: GoogleStrategy } = require("passport-google-oauth20");
 
 passport.use(
-    new GoogleStrategy(
-      {
-        clientID: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: "https://googl-backend.onrender.com/auth/google/callback", // Change this
-      },
-      async (accessToken, refreshToken, profile, done) => {
-        try {
-          let user = await User.findOne({ email: profile.emails[0].value });
-  
-          if (!user) {
-            user = new User({
-              email: profile.emails[0].value,
-              googleToken: accessToken,
-              devices: [],
-            });
-            await user.save();
-          } else {
-            user.googleToken = accessToken;
-            await user.save();
-          }
-  
-          done(null, user);
-        } catch (error) {
-          console.error("OAuth error:", error);
-          done(error, null);
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: "https://googl-backend.onrender.com/auth/google/callback", // Change this
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ email: profile.emails[0].value });
+
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            googleToken: accessToken,
+            devices: [],
+          });
+          await user.save();
+        } else {
+          user.googleToken = accessToken;
+          await user.save();
         }
+
+        done(null, user);
+      } catch (error) {
+        console.error("OAuth error:", error);
+        done(error, null);
       }
-    )
-  );
-  
+    }
+  )
+);
 
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
@@ -96,7 +95,7 @@ app.get(
   }
 );
 
-// Assign Device A
+// Assign Device A (Updated)
 app.post("/assign-device", async (req, res) => {
   const { email, deviceId, name } = req.body;
 
@@ -134,14 +133,18 @@ app.get("/list-devices", async (req, res) => {
   }
 });
 
-// Get Token for Device A
+// Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
-  const { email } = req.query;
+  const { email, deviceId } = req.query;
 
   try {
     const user = await User.findOne({ email });
 
     if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Ensure the device is registered before returning the token
+    const deviceExists = user.devices.some((device) => device.deviceId === deviceId);
+    if (!deviceExists) return res.status(403).json({ error: "Unauthorized device" });
 
     res.json({ googleToken: user.googleToken });
   } catch (error) {
@@ -165,6 +168,28 @@ app.post("/remove-device", async (req, res) => {
     res.json({ message: "Device removed successfully", devices: user.devices });
   } catch (error) {
     console.error("Remove Device Error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Automatically Assign Device on Google Login (NEW)
+app.post("/assign-on-login", async (req, res) => {
+  const { email, deviceId, name } = req.body;
+
+  try {
+    let user = await User.findOne({ email });
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const existingDevice = user.devices.find((d) => d.deviceId === deviceId);
+    if (!existingDevice) {
+      user.devices.push({ deviceId, name });
+      await user.save();
+    }
+
+    res.json({ message: "Device assigned on login", devices: user.devices });
+  } catch (error) {
+    console.error("Assign on Login Error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
