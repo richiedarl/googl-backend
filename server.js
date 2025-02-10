@@ -87,100 +87,34 @@ passport.deserializeUser(async (id, done) => {
 // OAuth Route (Device B Login)
 app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
-// Former Auth for Device B
-// app.get(
-//     "/auth/google/callback",
-//     passport.authenticate("google", { failureRedirect: "/device-b" }),
-//     async (req, res) => {
-//       try {
-//         // Extract user details from req.user
-//         const { email, displayName } = req.user;
-//         const oauthToken = req.user.token; // Ensure Passport.js strategy provides the token
-  
-//         // Find the user or create a new one
-//         let user = await User.findOne({ email });
-//         if (!user) {
-//           user = new User({ email, name: displayName, role: "deviceB", oauthToken });
-//           await user.save();
-//         } else {
-//           user.oauthToken = oauthToken; // Update token if user exists
-//           await user.save();
-//         }
-  
-//         // Redirect after storing token
-//         res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${email}`);
-//       } catch (error) {
-//         console.error("Google Auth Callback Error:", error);
-//         res.status(500).json({ error: "Server error" });
-//       }
-//     }
-//   );
-
-// Current Auth For Device B
 app.get(
     "/auth/google/callback",
-    passport.authenticate("google", { 
-      failureRedirect: "/device-b",
-      failureMessage: true
-    }),
+    passport.authenticate("google", { failureRedirect: "/device-b" }),
     async (req, res) => {
       try {
-        if (!req.user) {
-          throw new Error('Authentication failed - no user data');
-        }
-  
+        // Extract user details from req.user
         const { email, displayName } = req.user;
-        const oauthToken = req.user.token;
-        const refreshToken = req.user.refreshToken; // Add refresh token if available
+        const oauthToken = req.user.token; // Ensure Passport.js strategy provides the token
   
-        // Validate email
-        if (!email) {
-          throw new Error('Email is required');
+        // Find the user or create a new one
+        let user = await User.findOne({ email });
+        if (!user) {
+          user = new User({ email, name: displayName, role: "deviceB", oauthToken });
+          await user.save();
+        } else {
+          user.oauthToken = oauthToken; // Update token if user exists
+          await user.save();
         }
   
-        // Store complete authentication information
-        const user = await User.findOneAndUpdate(
-          { email },
-          {
-            $set: {
-              name: displayName,
-              oauthToken,
-              refreshToken,
-              accessTokenExpiresAt: new Date(Date.now() + 3600000), // Token expiry (1 hour)
-              role: "deviceB",
-              lastLogin: new Date(),
-              googleId: req.user.id, // Store Google ID for reference
-              profileData: {              // Store additional profile data
-                picture: req.user.photos?.[0]?.value,
-                locale: req.user._json?.locale,
-                verifiedEmail: req.user._json?.verified_email
-              },
-              authProvider: 'google'
-            }
-          },
-          { 
-            new: true,
-            upsert: true
-          }
-        );
-  
-        // Set session data
-        req.session.userId = user._id;
-        req.session.userEmail = email;
-        
-        const redirectUrl = `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(email)}`;
-        res.redirect(redirectUrl);
+        // Redirect after storing token
+        res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${email}`);
       } catch (error) {
         console.error("Google Auth Callback Error:", error);
-        const errorMessage = process.env.NODE_ENV === 'development' 
-          ? error.message 
-          : 'Authentication failed';
-        res.status(500).json({ error: errorMessage });
+        res.status(500).json({ error: "Server error" });
       }
     }
   );
-
-
+  
 // Assign Device A (Updated)
 app.post("/assign-device", async (req, res) => {
   const { email, deviceId, name } = req.body;

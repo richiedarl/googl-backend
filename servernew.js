@@ -99,7 +99,7 @@ app.get(
       }
 
       const { email, displayName } = req.user;
-      const oauthToken = req.user.token;
+      const oauthToken = accessToken; // Assign explicitly
       const refreshToken = req.user.refreshToken;
 
       if (!email) {
