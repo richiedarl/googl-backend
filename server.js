@@ -168,15 +168,20 @@ app.get("/auth/list-devices", async (req, res) => {
   
       // Fetch all users and their devices
       const users = await User.find({}, "email devices");
-      const devices = users.flatMap((user) =>
-        user.devices.map((device) => ({
-          email: user.email,
-          deviceId: device.deviceId,
-          name: device.name,
-        }))
-      );
-  
+
+      // Filter out users without devices
+      const devices = users
+        .filter(user => user.devices.length > 0) // ✅ Only users with devices
+        .flatMap(user =>
+          user.devices.map(device => ({
+            email: user.email,
+            deviceId: device.deviceId || "Unknown",
+            name: device.name || "Unnamed Device",
+          }))
+        );
+      
       res.json({ devices });
+      
     } catch (error) {
       console.error("Error fetching linked devices:", error);
       res.status(500).json({ error: "Server error" });
