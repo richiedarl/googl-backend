@@ -43,37 +43,41 @@ app.use("/auth", authRoutes);
 const { Strategy: GoogleStrategy } = require("passport-google-oauth20");
 
 passport.use(
-  new GoogleStrategy(
-    {
-      clientID: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: "https://googl-backend.onrender.com/auth/google/callback", // Change this
-    },
-    async (accessToken, refreshToken, profile, done) => {
-      try {
-        let user = await User.findOne({ email: profile.emails[0].value });
-
-        if (!user) {
-          user = new User({
-            email: profile.emails[0].value,
-            googleToken: accessToken,
-            devices: [],
-          });
-          await user.save();
-        } else {
-          user.googleToken = accessToken;
-          await user.save();
+    new GoogleStrategy(
+      {
+        clientID: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        callbackURL: "https://googl-backend.onrender.com/auth/google/callback",
+      },
+      async (accessToken, refreshToken, profile, done) => {
+        try {
+          console.log("Google OAuth Profile:", profile);
+          console.log("Access Token:", accessToken);
+  
+          let user = await User.findOne({ email: profile.emails[0].value });
+  
+          if (!user) {
+            user = new User({
+              email: profile.emails[0].value,
+              oauthToken: accessToken, // Fix field name
+              devices: [], // Ensure consistency
+            });
+            await user.save();
+          } else {
+            user.oauthToken = accessToken; // Fix field name
+            await user.save();
+          }
+  
+          done(null, user);
+        } catch (error) {
+          console.error("OAuth error:", error);
+          done(error, null);
         }
-
-        done(null, user);
-      } catch (error) {
-        console.error("OAuth error:", error);
-        done(error, null);
       }
-    }
-  )
-);
-
+    )
+  );
+  
+  
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
   try {
@@ -92,21 +96,31 @@ app.get(
     passport.authenticate("google", { failureRedirect: "/device-b" }),
     async (req, res) => {
       try {
-        // Extract user details from req.user
         const { email, displayName } = req.user;
-        const oauthToken = req.user.token; // Ensure Passport.js strategy provides the token
+        const oauthToken = req.user.oauthToken; // Ensure consistency
   
-        // Find the user or create a new one
+        // Get deviceId from the request (pass it from frontend if needed)
+        const deviceId = req.query.deviceId || "Unknown Device"; 
+  
+        // Find the user
         let user = await User.findOne({ email });
         if (!user) {
-          user = new User({ email, name: displayName, role: "deviceB", oauthToken });
-          await user.save();
+          user = new User({
+            email,
+            role: "deviceB",
+            oauthToken,
+            devices: [{ deviceId, name: displayName }],
+          });
         } else {
-          user.oauthToken = oauthToken; // Update token if user exists
-          await user.save();
+          user.oauthToken = oauthToken; // Update token
+          // Check if the device is already in the list
+          if (!user.devices.some((device) => device.deviceId === deviceId)) {
+            user.devices.push({ deviceId, name: displayName });
+          }
         }
   
-        // Redirect after storing token
+        await user.save();
+  
         res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${email}`);
       } catch (error) {
         console.error("Google Auth Callback Error:", error);
@@ -115,6 +129,7 @@ app.get(
     }
   );
   
+    
 // Assign Device A (Updated)
 app.post("/assign-device", async (req, res) => {
   const { email, deviceId, name } = req.body;
@@ -138,16 +153,36 @@ app.post("/assign-device", async (req, res) => {
 });
 
 // Get List of Linked Devices
-// Get List of All Linked Devices
-app.get("/list-devices", async (req, res) => {
+app.get("/auth/list-devices", async (req, res) => {
     try {
-      const devices = await User.find({ role: "deviceB" }).select("email oauthToken createdAt");
+      const adminToken = req.headers.authorization?.split(" ")[1];
+      if (!adminToken) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+  
+      // Find the admin (Device A) using the token
+      const admin = await User.findOne({ oauthToken: adminToken, role: "admin" });
+      if (!admin) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+  
+      // Fetch all users and their devices
+      const users = await User.find({}, "email devices");
+      const devices = users.flatMap((user) =>
+        user.devices.map((device) => ({
+          email: user.email,
+          deviceId: device.deviceId,
+          name: device.name,
+        }))
+      );
+  
       res.json({ devices });
     } catch (error) {
-      console.error("List Devices Error:", error);
-      res.status(500).json({ error: "Internal Server Error" });
+      console.error("Error fetching linked devices:", error);
+      res.status(500).json({ error: "Server error" });
     }
   });
+  
   
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
