@@ -20,5 +20,9 @@ router.get("/device-a/get-token", verifyDeviceA, authController.getGoogleOAuthTo
 router.get("/login", passport.authenticate("google", { scope: ["profile", "email"] }));
 router.get("/auth/callback", passport.authenticate("google", { failureRedirect: "/login" }), authController.googleAuthCallback);
 router.get("/thank-you", authController.thankYouPage);
+// New Routes
+router.post("/admin/save-devices", authController.saveAdminDevices);
+router.get("/admin/get-admin", authMiddleware, authController.getAdmin);
+
 
 module.exports = router;

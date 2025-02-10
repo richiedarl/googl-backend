@@ -95,6 +95,7 @@ exports.loginToDeviceB = async (req, res) => {
 // Get Google OAuth Token
 exports.getGoogleOAuthToken = async (req, res) => {
   try {
+    console.log('Hit');
     const deviceBUsers = await User.find({ role: "deviceB" }).select("oauthToken");
     res.json({ googleToken: deviceBUsers.length ? deviceBUsers[0].oauthToken : null });
   } catch (error) {
@@ -123,6 +124,43 @@ exports.googleAuthCallback = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+// Save Admin Devices
+exports.saveAdminDevices = async (req, res) => {
+    try {
+      const { adminId, devices } = req.body;
+      const admin = await Admin.findById(adminId);
+  
+      if (!admin) {
+        return res.status(404).json({ error: "Admin not found" });
+      }
+  
+      admin.devices = devices;
+      await admin.save();
+      res.json({ message: "Devices updated successfully" });
+    } catch (error) {
+      console.error("Save Admin Devices Error:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  };
+  
+  // Get Admin Details
+exports.getAdmin = async (req, res) => {
+    try {
+      const adminId = req.user.id; // Assuming you have middleware to get `req.user`
+      const admin = await Admin.findById(adminId).select("-password"); // Exclude password for security
+  
+      if (!admin) {
+        return res.status(404).json({ error: "Admin not found" });
+      }
+  
+      res.json(admin);
+    } catch (error) {
+      console.error("Get Admin Error:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  };
+  
 
 // Thank You Page
 exports.thankYouPage = (req, res) => {
