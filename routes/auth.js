@@ -22,7 +22,7 @@ router.get("/auth/callback", passport.authenticate("google", { failureRedirect: 
 router.get("/thank-you", authController.thankYouPage);
 // New Routes
 router.post("/admin/save-devices", authController.saveAdminDevices);
-router.get("/admin/get-admin", authMiddleware, authController.getAdmin);
+router.get("/admin/get-admin", authController.getAdmin);
 
 
 module.exports = router;
