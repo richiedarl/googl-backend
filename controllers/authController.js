@@ -23,41 +23,47 @@ exports.registerAdmin = async (req, res) => {
 
 // Admin Login
 exports.loginAdmin = async (req, res) => {
-  try {
-    const { email, password, deviceId } = req.body;
-
-    // Check if admin exists
-    const admin = await User.findOne({ email, role: "admin" });
-    if (!admin || !(await bcrypt.compare(password, admin.password))) {
-      return res.status(401).json({ error: "Invalid credentials" });
+    try {
+      const { email, password, deviceId } = req.body;
+      console.log("Received deviceId:", deviceId); // Debugging
+  
+      const admin = await User.findOne({ email, role: "admin" });
+      if (!admin || !(await bcrypt.compare(password, admin.password))) {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+  
+      if (!process.env.JWT_SECRET) {
+        console.error("JWT_SECRET is missing from .env file");
+        return res.status(500).json({ error: "Server misconfiguration: JWT_SECRET is not set" });
+      }
+  
+      // Ensure device ID is stored in `devices` array (like Google OAuth)
+      if (deviceId) {
+        const existingDevice = admin.devices.find((d) => d.deviceId === deviceId);
+        if (!existingDevice) {
+          admin.devices.push({ deviceId, name: `Admin Device ${admin.devices.length + 1}` });
+          await admin.save();
+          console.log(`Device ID saved for ${admin.email}:`, deviceId);
+        } else {
+          console.log("Device already exists in the database.");
+        }
+      } else {
+        console.warn("No deviceId received, skipping save.");
+      }
+  
+      const token = jwt.sign(
+        { email: admin.email, role: "admin", devices: admin.devices },
+        process.env.JWT_SECRET,
+        { expiresIn: "1h" }
+      );
+  
+      res.json({ message: "Login successful", token, redirect: "/device-a/list-devices" });
+    } catch (error) {
+      console.error("Login Admin Error:", error);
+      res.status(500).json({ error: "Server error" });
     }
-
-    // Ensure JWT_SECRET is set
-    if (!process.env.JWT_SECRET) {
-      console.error("JWT_SECRET is missing from .env file");
-      return res.status(500).json({ error: "Server misconfiguration: JWT_SECRET is not set" });
-    }
-
-    // Save device ID
-    if (deviceId) {
-      admin.deviceId = deviceId;
-      await admin.save();
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { email: admin.email, role: "admin", deviceId },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
-
-    res.json({ message: "Login successful", token, redirect: "/device-a/list-devices" });
-  } catch (error) {
-    console.error("Login Admin Error:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
+  };
+    
 // List DeviceB Users
 exports.listDevices = async (req, res) => {
   try {

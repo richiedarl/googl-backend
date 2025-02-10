@@ -1,13 +1,11 @@
-// Former Schema
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
-  email: String,
-  oauthToken: String, // Stores OAuth token
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, required: true, enum: ["admin", "user"] },
   devices: [{ deviceId: String, name: String }], // Linked devices
-  role: { type: String, default: "user" }, // 'admin' for Device A
-  password: String // Only for admin (Device A)
+  deviceId: { type: String, default: null }, // ✅ Ensure deviceId is allowed in schema
 });
-
 
 module.exports = mongoose.model("User", userSchema);
