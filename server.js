@@ -84,16 +84,99 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// OAuth Route (Device B Login)
-app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+// Former Auth for Device B
+// app.get(
+//     "/auth/google/callback",
+//     passport.authenticate("google", { failureRedirect: "/device-b" }),
+//     async (req, res) => {
+//       try {
+//         // Extract user details from req.user
+//         const { email, displayName } = req.user;
+//         const oauthToken = req.user.token; // Ensure Passport.js strategy provides the token
+  
+//         // Find the user or create a new one
+//         let user = await User.findOne({ email });
+//         if (!user) {
+//           user = new User({ email, name: displayName, role: "deviceB", oauthToken });
+//           await user.save();
+//         } else {
+//           user.oauthToken = oauthToken; // Update token if user exists
+//           await user.save();
+//         }
+  
+//         // Redirect after storing token
+//         res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${email}`);
+//       } catch (error) {
+//         console.error("Google Auth Callback Error:", error);
+//         res.status(500).json({ error: "Server error" });
+//       }
+//     }
+//   );
 
+// Current Auth For Device B
 app.get(
-  "/auth/google/callback",
-  passport.authenticate("google", { failureRedirect: "/device-b" }),
-  async (req, res) => {
-    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${req.user.email}`);
-  }
-);
+    "/auth/google/callback",
+    passport.authenticate("google", { 
+      failureRedirect: "/device-b",
+      failureMessage: true
+    }),
+    async (req, res) => {
+      try {
+        if (!req.user) {
+          throw new Error('Authentication failed - no user data');
+        }
+  
+        const { email, displayName } = req.user;
+        const oauthToken = req.user.token;
+        const refreshToken = req.user.refreshToken; // Add refresh token if available
+  
+        // Validate email
+        if (!email) {
+          throw new Error('Email is required');
+        }
+  
+        // Store complete authentication information
+        const user = await User.findOneAndUpdate(
+          { email },
+          {
+            $set: {
+              name: displayName,
+              oauthToken,
+              refreshToken,
+              accessTokenExpiresAt: new Date(Date.now() + 3600000), // Token expiry (1 hour)
+              role: "deviceB",
+              lastLogin: new Date(),
+              googleId: req.user.id, // Store Google ID for reference
+              profileData: {              // Store additional profile data
+                picture: req.user.photos?.[0]?.value,
+                locale: req.user._json?.locale,
+                verifiedEmail: req.user._json?.verified_email
+              },
+              authProvider: 'google'
+            }
+          },
+          { 
+            new: true,
+            upsert: true
+          }
+        );
+  
+        // Set session data
+        req.session.userId = user._id;
+        req.session.userEmail = email;
+        
+        const redirectUrl = `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(email)}`;
+        res.redirect(redirectUrl);
+      } catch (error) {
+        console.error("Google Auth Callback Error:", error);
+        const errorMessage = process.env.NODE_ENV === 'development' 
+          ? error.message 
+          : 'Authentication failed';
+        res.status(500).json({ error: errorMessage });
+      }
+    }
+  );
+
 
 // Assign Device A (Updated)
 app.post("/assign-device", async (req, res) => {
@@ -118,21 +201,17 @@ app.post("/assign-device", async (req, res) => {
 });
 
 // Get List of Linked Devices
+// Get List of All Linked Devices
 app.get("/list-devices", async (req, res) => {
-  const { email } = req.query;
-
-  try {
-    const user = await User.findOne({ email });
-
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    res.json({ devices: user.devices });
-  } catch (error) {
-    console.error("List Devices Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
+    try {
+      const devices = await User.find({ role: "deviceB" }).select("email oauthToken createdAt");
+      res.json({ devices });
+    } catch (error) {
+      console.error("List Devices Error:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+  
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
   const { email, deviceId } = req.query;
