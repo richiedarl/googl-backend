@@ -84,6 +84,9 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
+// OAuth Route (Device B Login)
+app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+
 // Former Auth for Device B
 // app.get(
 //     "/auth/google/callback",
