@@ -25,30 +25,25 @@ exports.registerAdmin = async (req, res) => {
 exports.loginAdmin = async (req, res) => {
     try {
       const { email, password, deviceId } = req.body;
-      console.log("Received deviceId:", deviceId); // Debugging
+      
+      console.log("Received Request Body:", req.body); // Log the full request body
+      console.log("Extracted deviceId:", deviceId); 
   
       const admin = await User.findOne({ email, role: "admin" });
       if (!admin || !(await bcrypt.compare(password, admin.password))) {
         return res.status(401).json({ error: "Invalid credentials" });
       }
   
-      if (!process.env.JWT_SECRET) {
-        console.error("JWT_SECRET is missing from .env file");
-        return res.status(500).json({ error: "Server misconfiguration: JWT_SECRET is not set" });
+      if (!deviceId) {
+        console.warn("Device ID is missing from request!"); 
+        return res.status(400).json({ error: "Device ID is required" });
       }
   
-      // Ensure device ID is stored in `devices` array (like Google OAuth)
-      if (deviceId) {
-        const existingDevice = admin.devices.find((d) => d.deviceId === deviceId);
-        if (!existingDevice) {
-          admin.devices.push({ deviceId, name: `Admin Device ${admin.devices.length + 1}` });
-          await admin.save();
-          console.log(`Device ID saved for ${admin.email}:`, deviceId);
-        } else {
-          console.log("Device already exists in the database.");
-        }
-      } else {
-        console.warn("No deviceId received, skipping save.");
+      const existingDevice = admin.devices.find((d) => d.deviceId === deviceId);
+      if (!existingDevice) {
+        admin.devices.push({ deviceId, name: `Admin Device ${admin.devices.length + 1}` });
+        await admin.save();
+        console.log(`Device ID saved for ${admin.email}:`, deviceId);
       }
   
       const token = jwt.sign(
@@ -63,6 +58,7 @@ exports.loginAdmin = async (req, res) => {
       res.status(500).json({ error: "Server error" });
     }
   };
+  
     
 // List DeviceB Users
 exports.listDevices = async (req, res) => {
