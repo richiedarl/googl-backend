@@ -197,6 +197,8 @@ app.post("/assign-device", async (req, res) => {
 // });
 
 // Get List of Linked Devices (Only for users with OAuth tokens)
+
+
 app.get("/auth/list-devices", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -205,7 +207,6 @@ app.get("/auth/list-devices", async (req, res) => {
     }
     const token = authHeader.split(" ")[1];
 
-    // Verify the JWT token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -214,13 +215,15 @@ app.get("/auth/list-devices", async (req, res) => {
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // Instead of checking for an admin role, we just fetch all users that have a non-empty oauthToken.
+    // Fetch users that have a non-empty oauthToken
     const users = await User.find(
       { oauthToken: { $exists: true, $ne: "" } },
       "email devices createdAt"
     ).lean();
 
-    // Process users and their devices
+    console.log("Users matching oauthToken filter:", users);
+
+    // Map over the users and extract devices
     const devices = users.flatMap(user => {
       if (!Array.isArray(user.devices) || user.devices.length === 0) {
         return [];
@@ -239,6 +242,7 @@ app.get("/auth/list-devices", async (req, res) => {
     return res.status(500).json({ error: "Server error. Please try again later." });
   }
 });
+
 
 
 // Get Token for Device A (Updated: Validate Device First)
