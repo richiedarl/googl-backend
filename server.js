@@ -7,6 +7,7 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const User = require("./models/User");
 const authRoutes = require("./routes/auth");
+const jwt = require('jsonwebtoken'); // Make sure this is imported at the top
 const connectDB = require("./config/db");
 
 const app = express();
@@ -151,48 +152,62 @@ app.post("/assign-device", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-const SECRET_KEY = process.env.JWT_SECRET;
+// const SECRET_KEY = process.env.JWT_SECRET;
+
 app.get("/auth/list-devices", async (req, res) => {
   try {
-    const adminToken = req.headers.authorization?.split(" ")[1];
+    const token = req.headers.authorization?.split(" ")[1];
 
-    if (!adminToken) {
-      return res.status(401).json({ error: "Unauthorized. Missing admin token." });
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
     }
 
-    // Verify admin token
-    const admin = await User.findOne({ oauthToken: adminToken });
-    if (!admin) {
-      return res.status(403).json({ error: "Access denied. Invalid admin token." });
-    }
+    try {
+      // Verify the JWT token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Find the admin user
+      const admin = await User.findOne({ 
+        email: decoded.email,
+        role: "admin"
+      });
 
-    // Fetch all users and their devices
-    const users = await User.find({}, "email devices");
-
-    // Keep the device information in the response
-    const devices = users.flatMap(user => {
-      if (!Array.isArray(user.devices) || user.devices.length === 0) {
-        return [{ 
-          email: user.email,
-          deviceId: null,
-          name: "Default Device"
-        }];
+      if (!admin) {
+        return res.status(403).json({ error: "Access denied. Not an admin user." });
       }
-      return user.devices.map(device => ({
-        email: user.email,
-        deviceId: device.deviceId,
-        name: device.name || "Unnamed Device",
-      }));
-    });
 
-    return res.json({ devices });
+      // Fetch all users and their devices
+      const users = await User.find({}, "email devices");
+
+      // Keep the device information in the response
+      const devices = users.flatMap(user => {
+        if (!Array.isArray(user.devices) || user.devices.length === 0) {
+          return [{ 
+            email: user.email,
+            deviceId: null,
+            name: "Default Device"
+          }];
+        }
+        return user.devices.map(device => ({
+          email: user.email,
+          deviceId: device.deviceId,
+          name: device.name || "Unnamed Device",
+        }));
+      });
+
+      return res.json({ devices });
+
+    } catch (jwtError) {
+      console.error("JWT verification failed:", jwtError);
+      return res.status(403).json({ error: "Invalid or expired token." });
+    }
 
   } catch (error) {
     console.error("Error fetching devices:", error);
     return res.status(500).json({ error: "Server error. Please try again later." });
   }
-});  
-  
+});
+
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
   const { email, deviceId } = req.query;
