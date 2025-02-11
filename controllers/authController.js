@@ -71,22 +71,6 @@ exports.listDevices = async (req, res) => {
   }
 };
 
-// Login to Device B
-exports.loginToDevice = async (req, res) => {
-  try {
-    const { deviceBEmail } = req.body;
-
-    const deviceB = await User.findOne({ email: deviceBEmail, role: "deviceB" });
-    if (!deviceB || !deviceB.oauthToken) {
-      return res.status(404).json({ error: "No OAuth token found for this device." });
-    }
-
-    res.json({ message: "OAuth token retrieved successfully", oauthToken: deviceB.oauthToken });
-  } catch (error) {
-    console.error("Login to Device B Error:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-};
 
 // Get Google OAuth Token
 exports.getGoogleOAuthToken = async (req, res) => {
