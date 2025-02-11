@@ -152,50 +152,6 @@ app.post("/assign-device", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-// const SECRET_KEY = process.env.JWT_SECRET;
-
-// Get List of Linked Devices (Simplified)
-// app.get("/auth/list-devices", async (req, res) => {
-//   try {
-//     // Extract token from the Authorization header
-//     const authHeader = req.headers.authorization;
-//     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-//       return res.status(401).json({ error: "Unauthorized. Missing token." });
-//     }
-//     const token = authHeader.split(" ")[1];
-
-//     // Verify the JWT token
-//     let decoded;
-//     try {
-//       decoded = jwt.verify(token, process.env.JWT_SECRET);
-//     } catch (err) {
-//       console.error("JWT verification failed:", err);
-//       return res.status(403).json({ error: "Invalid or expired token." });
-//     }
-
-//     // At this point, the token is valid.
-//     // Fetch all users with their devices (only selecting email and devices)
-//     const users = await User.find({}, "email devices").lean();
-
-//     // Create an array of devices from all users
-//     const devices = users.flatMap(user => {
-//       if (Array.isArray(user.devices) && user.devices.length > 0) {
-//         return user.devices.map(device => ({
-//           email: user.email,
-//           deviceId: device.deviceId || "Unknown",
-//           name: device.name || "Unnamed Device"
-//         }));
-//       }
-//       return [];
-//     });
-
-//     return res.json({ devices });
-//   } catch (error) {
-//     console.error("Error fetching devices:", error);
-//     return res.status(500).json({ error: "Server error. Please try again later." });
-//   }
-// });
-
 // Get List of Linked Devices (Only for users with OAuth tokens)
 
 
@@ -272,7 +228,7 @@ app.get("/auth/list-devices", async (req, res) => {
 
 app.post("/auth/login-to-device", async (req, res) => {
   try {
-    // Check for authorization header
+    // Verify admin authentication
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized. Missing token." });
@@ -288,34 +244,70 @@ app.post("/auth/login-to-device", async (req, res) => {
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // Get deviceB email from request body
     const { deviceBEmail } = req.body;
     
-    console.log("Looking up device with email:", deviceBEmail);
-
-    // Find the user (deviceB)
-    const user = await User.findOne({ email: deviceBEmail, role: "user" });
+    // Find the user and get their OAuth token
+    const deviceBUser = await User.findOne({ email: deviceBEmail });
     
-    // Check if user exists and has oauth token
-    if (!user) {
-      return res.status(404).json({ error: "Device not found." });
-    }
-    
-    if (!user.oauthToken) {
+    if (!deviceBUser || !deviceBUser.oauthToken) {
       return res.status(404).json({ error: "No OAuth token found for this device." });
     }
 
-    console.log("Found user with oauth token");
+    // Store device information in session
+    req.session.deviceBToken = deviceBUser.oauthToken;
+    req.session.deviceBEmail = deviceBEmail;
+    req.session.isAdminAsDevice = true;
+    req.session.originalAdminToken = token;
 
-    // Return success with oauth token
+    // Save session explicitly
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const redirectUrl = `https://googl-backend.onrender.com/auth/device-session?email=${encodeURIComponent(deviceBEmail)}`;
+    
     res.json({ 
-      message: "OAuth token retrieved successfully",
-      oauthToken: user.oauthToken,
-      redirectUrl: `https://googl-backend.onrender.com/auth/login?email=${encodeURIComponent(deviceBEmail)}`
+      success: true,
+      message: "Session created with device credentials",
+      redirectUrl
     });
 
   } catch (error) {
-    console.error("Login to Device B Error:", error);
+    console.error("Login to Device Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// New endpoint to handle device session creation
+app.get("/auth/device-session", async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!req.session.deviceBToken || !req.session.deviceBEmail || req.session.deviceBEmail !== email) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+
+    // Set up the session with device credentials
+    req.session.oauthToken = req.session.deviceBToken;
+    req.session.email = email;
+    req.session.isAuthenticated = true;
+
+    // Save session explicitly
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // Redirect to the device B frontend
+    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(email)}`);
+
+  } catch (error) {
+    console.error("Device Session Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
