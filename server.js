@@ -108,7 +108,7 @@ app.get(
         if (!user) {
           user = new User({
             email,
-            role: "deviceB",
+            role: "user",
             oauthToken,
             devices: [{ deviceId, name: displayName }],
           });

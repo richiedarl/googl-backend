@@ -18,8 +18,9 @@ const UserSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["admin", "deviceB"],
+      enum: ["admin", "user"],
       required: true,
+      default: "user",
     },
     oauthToken: {
       type: String, // Stores the OAuth access token for deviceB users\n    // (Admins typically do not use this field)\n",
