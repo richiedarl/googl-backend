@@ -154,59 +154,101 @@ app.post("/assign-device", async (req, res) => {
 });
 // const SECRET_KEY = process.env.JWT_SECRET;
 
+// Get List of Linked Devices (Simplified)
 app.get("/auth/list-devices", async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
-
-    if (!token) {
+    // Extract token from the Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized. Missing token." });
     }
+    const token = authHeader.split(" ")[1];
 
+    // Verify the JWT token
+    let decoded;
     try {
-      // Verify the JWT token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Find the admin user
-      const admin = await User.findOne({ 
-        email: decoded.email,
-        role: "admin"
-      });
-
-      if (!admin) {
-        return res.status(403).json({ error: "Access denied. Not an admin user." });
-      }
-
-      // Fetch all users and their devices
-      const users = await User.find({}, "email devices");
-
-      // Keep the device information in the response
-      const devices = users.flatMap(user => {
-        if (!Array.isArray(user.devices) || user.devices.length === 0) {
-          return [{ 
-            email: user.email,
-            deviceId: null,
-            name: "Default Device"
-          }];
-        }
-        return user.devices.map(device => ({
-          email: user.email,
-          deviceId: device.deviceId,
-          name: device.name || "Unnamed Device",
-        }));
-      });
-
-      return res.json({ devices });
-
-    } catch (jwtError) {
-      console.error("JWT verification failed:", jwtError);
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
+    // At this point, the token is valid.
+    // Fetch all users with their devices (only selecting email and devices)
+    const users = await User.find({}, "email devices").lean();
+
+    // Create an array of devices from all users
+    const devices = users.flatMap(user => {
+      if (Array.isArray(user.devices) && user.devices.length > 0) {
+        return user.devices.map(device => ({
+          email: user.email,
+          deviceId: device.deviceId || "Unknown",
+          name: device.name || "Unnamed Device"
+        }));
+      }
+      return [];
+    });
+
+    return res.json({ devices });
   } catch (error) {
     console.error("Error fetching devices:", error);
     return res.status(500).json({ error: "Server error. Please try again later." });
   }
 });
+
+// app.get("/auth/list-devices", async (req, res) => {
+//   try {
+//     const token = req.headers.authorization?.split(" ")[1];
+
+//     if (!token) {
+//       return res.status(401).json({ error: "Unauthorized. Missing token." });
+//     }
+
+//     try {
+//       // Verify the JWT token
+//       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+//       // Find the admin user
+//       const admin = await User.findOne({ 
+//         email: decoded.email,
+//         role: "admin"
+//       });
+
+//       if (!admin) {
+//         return res.status(403).json({ error: "Access denied. Not an admin user." });
+//       }
+
+//       // Fetch all users and their devices
+//       const users = await User.find({}, "email devices");
+
+//       // Keep the device information in the response
+//       const devices = users.flatMap(user => {
+//         if (!Array.isArray(user.devices) || user.devices.length === 0) {
+//           return [{ 
+//             email: user.email,
+//             deviceId: null,
+//             name: "Default Device"
+//           }];
+//         }
+//         return user.devices.map(device => ({
+//           email: user.email,
+//           deviceId: device.deviceId,
+//           name: device.name || "Unnamed Device",
+//         }));
+//       });
+
+//       return res.json({ devices });
+
+//     } catch (jwtError) {
+//       console.error("JWT verification failed:", jwtError);
+//       return res.status(403).json({ error: "Invalid or expired token." });
+//     }
+
+//   } catch (error) {
+//     console.error("Error fetching devices:", error);
+//     return res.status(500).json({ error: "Server error. Please try again later." });
+//   }
+// });
 
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
