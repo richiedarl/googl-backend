@@ -151,8 +151,7 @@ app.post("/assign-device", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
-// Get List of Linked Devices
+const SECRET_KEY = process.env.JWT_SECRET;
 app.get("/auth/list-devices", async (req, res) => {
   try {
     const adminToken = req.headers.authorization?.split(" ")[1];
@@ -170,26 +169,29 @@ app.get("/auth/list-devices", async (req, res) => {
     // Fetch all users and their devices
     const users = await User.find({}, "email devices");
 
-    // Extract devices properly
+    // Keep the device information in the response
     const devices = users.flatMap(user => {
       if (!Array.isArray(user.devices) || user.devices.length === 0) {
-        return []; // Ignore users without devices
+        return [{ 
+          email: user.email,
+          deviceId: null,
+          name: "Default Device"
+        }];
       }
       return user.devices.map(device => ({
         email: user.email,
-        deviceId: device.deviceId || "Unknown",
+        deviceId: device.deviceId,
         name: device.name || "Unnamed Device",
       }));
     });
 
-    return res.json({ devices: devices.length ? devices : [] });
+    return res.json({ devices });
 
   } catch (error) {
-    console.error("Error fetching linked devices:", error);
+    console.error("Error fetching devices:", error);
     return res.status(500).json({ error: "Server error. Please try again later." });
   }
-});
-  
+});  
   
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
