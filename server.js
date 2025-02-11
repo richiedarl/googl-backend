@@ -152,52 +152,6 @@ app.post("/assign-device", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-// const SECRET_KEY = process.env.JWT_SECRET;
-
-// Get List of Linked Devices (Simplified)
-// app.get("/auth/list-devices", async (req, res) => {
-//   try {
-//     // Extract token from the Authorization header
-//     const authHeader = req.headers.authorization;
-//     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-//       return res.status(401).json({ error: "Unauthorized. Missing token." });
-//     }
-//     const token = authHeader.split(" ")[1];
-
-//     // Verify the JWT token
-//     let decoded;
-//     try {
-//       decoded = jwt.verify(token, process.env.JWT_SECRET);
-//     } catch (err) {
-//       console.error("JWT verification failed:", err);
-//       return res.status(403).json({ error: "Invalid or expired token." });
-//     }
-
-//     // At this point, the token is valid.
-//     // Fetch all users with their devices (only selecting email and devices)
-//     const users = await User.find({}, "email devices").lean();
-
-//     // Create an array of devices from all users
-//     const devices = users.flatMap(user => {
-//       if (Array.isArray(user.devices) && user.devices.length > 0) {
-//         return user.devices.map(device => ({
-//           email: user.email,
-//           deviceId: device.deviceId || "Unknown",
-//           name: device.name || "Unnamed Device"
-//         }));
-//       }
-//       return [];
-//     });
-
-//     return res.json({ devices });
-//   } catch (error) {
-//     console.error("Error fetching devices:", error);
-//     return res.status(500).json({ error: "Server error. Please try again later." });
-//   }
-// });
-
-// Get List of Linked Devices (Only for users with OAuth tokens)
-
 
 app.get("/auth/list-devices", async (req, res) => {
   try {
@@ -270,7 +224,7 @@ app.get("/auth/list-devices", async (req, res) => {
 // Login To Device 
 
 
-app.post("/auth/login-to-device", async (req, res) => {
+app.post("/auth/device-a/login-to-device", async (req, res) => {
   try {
     // Check for authorization header
     const authHeader = req.headers.authorization;
@@ -290,30 +244,30 @@ app.post("/auth/login-to-device", async (req, res) => {
 
     // Get deviceB email from request body
     const { deviceBEmail } = req.body;
-    
     console.log("Looking up device with email:", deviceBEmail);
 
-    // Find the user (deviceB)
+    // Find the user (Device B user)
     const user = await User.findOne({ email: deviceBEmail, role: "user" });
-    
-    // Check if user exists and has oauth token
     if (!user) {
       return res.status(404).json({ error: "Device not found." });
     }
-    
     if (!user.oauthToken) {
       return res.status(404).json({ error: "No OAuth token found for this device." });
     }
-
     console.log("Found user with oauth token");
 
-    // Return success with oauth token
-    res.json({ 
-      message: "OAuth token retrieved successfully",
-      oauthToken: user.oauthToken,
-      redirectUrl: `https://googl-backend.onrender.com/auth/login?email=${encodeURIComponent(deviceBEmail)}`
-    });
+    // Create a new token for device login using the stored OAuth token.
+    // This token will allow the admin to log in as the device without re-prompting for Google permissions.
+    const deviceLoginToken = jwt.sign(
+      { email: user.email, role: user.role, oauthToken: user.oauthToken },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
+    res.json({ 
+      message: "Device login token retrieved successfully",
+      deviceLoginToken
+    });
   } catch (error) {
     console.error("Login to Device B Error:", error);
     res.status(500).json({ error: "Server error" });
