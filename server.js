@@ -154,39 +154,41 @@ app.post("/assign-device", async (req, res) => {
 
 // Get List of Linked Devices
 app.get("/auth/list-devices", async (req, res) => {
-    try {
-      const adminToken = req.headers.authorization?.split(" ")[1];
-      if (!adminToken) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
-  
-      // Find the admin (Device A) using the token
-      const admin = await User.findOne({ oauthToken: adminToken, role: "admin" });
-      if (!admin) {
-        return res.status(403).json({ error: "Access denied" });
-      }
-  
-      // Fetch all users and their devices
-      const users = await User.find({}, "email devices");
+  try {
+    const adminToken = req.headers.authorization?.split(" ")[1];
 
-      // Filter out users without devices
-      const devices = users
-        .filter(user => user.devices.length > 0) // ✅ Only users with devices
-        .flatMap(user =>
-          user.devices.map(device => ({
-            email: user.email,
-            deviceId: device.deviceId || "Unknown",
-            name: device.name || "Unnamed Device",
-          }))
-        );
-      
-      res.json({ devices });
-      
-    } catch (error) {
-      console.error("Error fetching linked devices:", error);
-      res.status(500).json({ error: "Server error" });
+    if (!adminToken) {
+      return res.status(401).json({ error: "Unauthorized. Missing admin token." });
     }
-  });
+
+    // Verify admin token
+    const admin = await User.findOne({ oauthToken: adminToken });
+    if (!admin) {
+      return res.status(403).json({ error: "Access denied. Invalid admin token." });
+    }
+
+    // Fetch all users and their devices
+    const users = await User.find({}, "email devices");
+
+    // Extract devices properly
+    const devices = users.flatMap(user => {
+      if (!Array.isArray(user.devices) || user.devices.length === 0) {
+        return []; // Ignore users without devices
+      }
+      return user.devices.map(device => ({
+        email: user.email,
+        deviceId: device.deviceId || "Unknown",
+        name: device.name || "Unnamed Device",
+      }));
+    });
+
+    return res.json({ devices: devices.length ? devices : [] });
+
+  } catch (error) {
+    console.error("Error fetching linked devices:", error);
+    return res.status(500).json({ error: "Server error. Please try again later." });
+  }
+});
   
   
 // Get Token for Device A (Updated: Validate Device First)
