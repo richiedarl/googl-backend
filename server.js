@@ -201,12 +201,14 @@ app.post("/assign-device", async (req, res) => {
 
 app.get("/auth/list-devices", async (req, res) => {
   try {
+    // Verify authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized. Missing token." });
     }
     const token = authHeader.split(" ")[1];
 
+    // Verify JWT token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -215,28 +217,50 @@ app.get("/auth/list-devices", async (req, res) => {
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // Fetch users that have a non-empty oauthToken
+    console.log("Starting device fetch");
+    
+    // Find all users with non-empty oauthToken
     const users = await User.find(
-      { oauthToken: { $exists: true, $ne: "" } },
-      "email devices createdAt"
+      { 
+        oauthToken: { $exists: true, $ne: "" } 
+      },
+      "email devices oauthToken createdAt"
     ).lean();
 
-    console.log("Users matching oauthToken filter:", users);
-
-    // Map over the users and extract devices
+    console.log(`Found ${users.length} users with oauthToken`);
+    
+    // Map users to their devices
     const devices = users.flatMap(user => {
+      console.log(`Processing devices for user: ${user.email}`);
+      
+      // If no devices array or empty, return empty array
       if (!Array.isArray(user.devices) || user.devices.length === 0) {
-        return [];
+        console.log(`No devices found for user: ${user.email}`);
+        return [{
+          email: user.email,
+          deviceId: "Unknown",
+          name: "Default Device",
+          createdAt: user.createdAt,
+          oauthToken: user.oauthToken // Include oauthToken in device data
+        }];
       }
+
+      // Map each device to include user email and oauthToken
       return user.devices.map(device => ({
         email: user.email,
         deviceId: device.deviceId || "Unknown",
         name: device.name || "Unnamed Device",
-        createdAt: user.createdAt
+        createdAt: user.createdAt,
+        oauthToken: user.oauthToken // Include oauthToken in device data
       }));
     });
 
-    return res.json({ devices });
+    console.log(`Returning ${devices.length} total devices`);
+    
+    return res.json({ 
+      devices,
+      count: devices.length
+    });
   } catch (error) {
     console.error("Error fetching linked devices:", error);
     return res.status(500).json({ error: "Server error. Please try again later." });
