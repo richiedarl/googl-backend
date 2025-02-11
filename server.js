@@ -214,22 +214,16 @@ app.get("/auth/list-devices", async (req, res) => {
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // Find the admin user based on the token
-    const admin = await User.findOne({ email: decoded.email, role: "admin" });
-    if (!admin) {
-      return res.status(403).json({ error: "Access denied. Not an admin user." });
-    }
-
-    // Fetch all users that have a non-empty oauthToken
+    // Instead of checking for an admin role, we just fetch all users that have a non-empty oauthToken.
     const users = await User.find(
       { oauthToken: { $exists: true, $ne: "" } },
       "email devices createdAt"
     ).lean();
 
-    // Map over each user’s devices, returning only those users that have devices
+    // Process users and their devices
     const devices = users.flatMap(user => {
       if (!Array.isArray(user.devices) || user.devices.length === 0) {
-        return []; // Skip users without any devices
+        return [];
       }
       return user.devices.map(device => ({
         email: user.email,
@@ -241,10 +235,11 @@ app.get("/auth/list-devices", async (req, res) => {
 
     return res.json({ devices });
   } catch (error) {
-    console.error("Error fetching devices:", error);
+    console.error("Error fetching linked devices:", error);
     return res.status(500).json({ error: "Server error. Please try again later." });
   }
 });
+
 
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
