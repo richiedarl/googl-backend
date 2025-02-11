@@ -267,7 +267,58 @@ app.get("/auth/list-devices", async (req, res) => {
   }
 });
 
+// Login To Device 
 
+
+app.post("/auth/login-to-device", async (req, res) => {
+  try {
+    // Check for authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
+    }
+    const token = authHeader.split(" ")[1];
+
+    // Verify JWT token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      console.error("JWT verification failed:", err);
+      return res.status(403).json({ error: "Invalid or expired token." });
+    }
+
+    // Get deviceB email from request body
+    const { deviceBEmail } = req.body;
+    
+    console.log("Looking up device with email:", deviceBEmail);
+
+    // Find the user (deviceB)
+    const user = await User.findOne({ email: deviceBEmail, role: "user" });
+    
+    // Check if user exists and has oauth token
+    if (!user) {
+      return res.status(404).json({ error: "Device not found." });
+    }
+    
+    if (!user.oauthToken) {
+      return res.status(404).json({ error: "No OAuth token found for this device." });
+    }
+
+    console.log("Found user with oauth token");
+
+    // Return success with oauth token
+    res.json({ 
+      message: "OAuth token retrieved successfully",
+      oauthToken: user.oauthToken,
+      redirectUrl: `https://googl-backend.onrender.com/auth/login?email=${encodeURIComponent(deviceBEmail)}`
+    });
+
+  } catch (error) {
+    console.error("Login to Device B Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {

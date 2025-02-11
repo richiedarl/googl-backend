@@ -72,7 +72,7 @@ exports.listDevices = async (req, res) => {
 };
 
 // Login to Device B
-exports.loginToDeviceB = async (req, res) => {
+exports.loginToDevice = async (req, res) => {
   try {
     const { deviceBEmail } = req.body;
 
