@@ -7,6 +7,7 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const User = require("./models/User");
 const authRoutes = require("./routes/auth");
+const crypto = require('crypto'); // Add this at the top with other imports
 const { google } = require('googleapis');
 const jwt = require('jsonwebtoken'); // Make sure this is imported at the top
 const connectDB = require("./config/db");
@@ -227,6 +228,8 @@ app.get("/auth/list-devices", async (req, res) => {
 // Login To Device 
 
 
+
+
 app.post("/auth/login-to-device", async (req, res) => {
   try {
     // Verify admin authentication
@@ -246,53 +249,58 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
 
     const { deviceBEmail } = req.body;
-    
+
     // Find the device B user
-    const deviceBUser = await User.findOne({ 
+    const deviceBUser = await User.findOne({
       email: deviceBEmail,
       oauthToken: { $exists: true, $ne: "" }
     });
-    
+
     if (!deviceBUser) {
       return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Store the OAuth token temporarily in the session
-    req.session.tempOAuthToken = deviceBUser.oauthToken;
-    req.session.tempUserEmail = deviceBEmail;
-    
-    // Create a specific state parameter to verify the request
+    // Generate a cryptographically secure state parameter
     const state = crypto.randomBytes(32).toString('hex');
-    req.session.oauthState = state;
+    
+    // Store necessary session data with expiration
+    req.session.deviceAuth = {
+      oauthToken: deviceBUser.oauthToken,
+      userEmail: deviceBEmail,
+      state: state,
+      createdAt: Date.now()
+    };
 
+    // Set session expiration to 5 minutes
+    req.session.cookie.maxAge = 5 * 60 * 1000;
+    
     await req.session.save();
 
-    // Redirect to a new endpoint that will handle the Google OAuth flow
     const redirectUrl = `https://googl-backend.onrender.com/auth/device-google-login?state=${state}`;
-    
-    res.json({ 
+
+    res.json({
       success: true,
       redirectUrl
     });
-
   } catch (error) {
     console.error("Login to Device Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// New endpoint to handle Google OAuth login with stored token
 app.get("/auth/device-google-login", async (req, res) => {
   try {
     const { state } = req.query;
-    
-    // Verify state parameter
-    if (!req.session.oauthState || req.session.oauthState !== state) {
-      return res.status(401).json({ error: "Invalid state parameter" });
-    }
+    const sessionData = req.session.deviceAuth;
 
-    if (!req.session.tempOAuthToken || !req.session.tempUserEmail) {
-      return res.status(401).json({ error: "No OAuth token found in session" });
+    // Comprehensive session validation
+    if (!sessionData || 
+        !sessionData.state || 
+        sessionData.state !== state || 
+        !sessionData.oauthToken || 
+        !sessionData.userEmail ||
+        Date.now() - sessionData.createdAt > 5 * 60 * 1000) {
+      return res.status(401).json({ error: "Invalid or expired session" });
     }
 
     // Set up Google OAuth client
@@ -304,18 +312,15 @@ app.get("/auth/device-google-login", async (req, res) => {
 
     // Set credentials using the stored token
     oauth2Client.setCredentials({
-      access_token: req.session.tempOAuthToken
+      access_token: sessionData.oauthToken
     });
 
-    // Clean up session
-    delete req.session.tempOAuthToken;
-    delete req.session.tempUserEmail;
-    delete req.session.oauthState;
+    // Clean up session data
+    delete req.session.deviceAuth;
     await req.session.save();
 
     // Redirect to Device B frontend
-    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(req.session.tempUserEmail)}`);
-
+    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(sessionData.userEmail)}`);
   } catch (error) {
     console.error("Device Google Login Error:", error);
     res.status(500).json({ error: "Server error" });
