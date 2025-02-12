@@ -7,8 +7,6 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const User = require("./models/User");
 const authRoutes = require("./routes/auth");
-const crypto = require('crypto'); // Add this at the top with other imports
-const { google } = require('googleapis');
 const jwt = require('jsonwebtoken'); // Make sure this is imported at the top
 const connectDB = require("./config/db");
 
@@ -228,8 +226,6 @@ app.get("/auth/list-devices", async (req, res) => {
 // Login To Device 
 
 
-
-
 app.post("/auth/login-to-device", async (req, res) => {
   try {
     // Verify admin authentication
@@ -239,90 +235,52 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
     const token = authHeader.split(" ")[1];
 
-    // Verify JWT token
+    // Verify JWT and check admin role
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Find admin user to verify role
+      const adminUser = await User.findOne({ email: decoded.email });
+      if (!adminUser || adminUser.role !== "admin") {
+        return res.status(403).json({ error: "Not authorized as admin" });
+      }
     } catch (err) {
       console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
     const { deviceBEmail } = req.body;
-
-    // Find the device B user
-    const deviceBUser = await User.findOne({
+    
+    // Find the device B user using schema structure
+    const deviceBUser = await User.findOne({ 
       email: deviceBEmail,
+      role: "user",
       oauthToken: { $exists: true, $ne: "" }
     });
-
+    
     if (!deviceBUser) {
       return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Generate a cryptographically secure state parameter
-    const state = crypto.randomBytes(32).toString('hex');
-    
-    // Store necessary session data with expiration
-    req.session.deviceAuth = {
+    // Create session data matching your schema structure
+    req.session.user = {
+      email: deviceBUser.email,
       oauthToken: deviceBUser.oauthToken,
-      userEmail: deviceBEmail,
-      state: state,
-      createdAt: Date.now()
+      role: "user",
+      devices: deviceBUser.devices
     };
 
-    // Set session expiration to 5 minutes
-    req.session.cookie.maxAge = 5 * 60 * 1000;
-    
     await req.session.save();
 
-    const redirectUrl = `https://googl-backend.onrender.com/auth/device-google-login?state=${state}`;
-
-    res.json({
+    // Redirect to your frontend application
+    res.json({ 
       success: true,
-      redirectUrl
+      email: deviceBUser.email,
+      redirectUrl: `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(deviceBUser.email)}`
     });
+
   } catch (error) {
     console.error("Login to Device Error:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-app.get("/auth/device-google-login", async (req, res) => {
-  try {
-    const { state } = req.query;
-    const sessionData = req.session.deviceAuth;
-
-    // Comprehensive session validation
-    if (!sessionData || 
-        !sessionData.state || 
-        sessionData.state !== state || 
-        !sessionData.oauthToken || 
-        !sessionData.userEmail ||
-        Date.now() - sessionData.createdAt > 5 * 60 * 1000) {
-      return res.status(401).json({ error: "Invalid or expired session" });
-    }
-
-    // Set up Google OAuth client
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_CALLBACK_URL
-    );
-
-    // Set credentials using the stored token
-    oauth2Client.setCredentials({
-      access_token: sessionData.oauthToken
-    });
-
-    // Clean up session data
-    delete req.session.deviceAuth;
-    await req.session.save();
-
-    // Redirect to Device B frontend
-    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(sessionData.userEmail)}`);
-  } catch (error) {
-    console.error("Device Google Login Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
