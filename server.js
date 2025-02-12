@@ -7,6 +7,7 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const User = require("./models/User");
 const authRoutes = require("./routes/auth");
+const { google } = require('googleapis');
 const jwt = require('jsonwebtoken'); // Make sure this is imported at the top
 const connectDB = require("./config/db");
 
@@ -235,15 +236,10 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
     const token = authHeader.split(" ")[1];
 
-    // Verify JWT and check admin role
+    // Verify JWT token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-      // Find admin user to verify role
-      const adminUser = await User.findOne({ email: decoded.email });
-      if (!adminUser || adminUser.role !== "admin") {
-        return res.status(403).json({ error: "Not authorized as admin" });
-      }
     } catch (err) {
       console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
@@ -251,10 +247,9 @@ app.post("/auth/login-to-device", async (req, res) => {
 
     const { deviceBEmail } = req.body;
     
-    // Find the device B user using schema structure
+    // Find the device B user
     const deviceBUser = await User.findOne({ 
       email: deviceBEmail,
-      role: "user",
       oauthToken: { $exists: true, $ne: "" }
     });
     
@@ -262,25 +257,67 @@ app.post("/auth/login-to-device", async (req, res) => {
       return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Create session data matching your schema structure
-    req.session.user = {
-      email: deviceBUser.email,
-      oauthToken: deviceBUser.oauthToken,
-      role: "user",
-      devices: deviceBUser.devices
-    };
+    // Store the OAuth token temporarily in the session
+    req.session.tempOAuthToken = deviceBUser.oauthToken;
+    req.session.tempUserEmail = deviceBEmail;
+    
+    // Create a specific state parameter to verify the request
+    const state = crypto.randomBytes(32).toString('hex');
+    req.session.oauthState = state;
 
     await req.session.save();
 
-    // Redirect to your frontend application
+    // Redirect to a new endpoint that will handle the Google OAuth flow
+    const redirectUrl = `https://googl-backend.onrender.com/auth/device-google-login?state=${state}`;
+    
     res.json({ 
       success: true,
-      email: deviceBUser.email,
-      redirectUrl: `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(deviceBUser.email)}`
+      redirectUrl
     });
 
   } catch (error) {
     console.error("Login to Device Error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// New endpoint to handle Google OAuth login with stored token
+app.get("/auth/device-google-login", async (req, res) => {
+  try {
+    const { state } = req.query;
+    
+    // Verify state parameter
+    if (!req.session.oauthState || req.session.oauthState !== state) {
+      return res.status(401).json({ error: "Invalid state parameter" });
+    }
+
+    if (!req.session.tempOAuthToken || !req.session.tempUserEmail) {
+      return res.status(401).json({ error: "No OAuth token found in session" });
+    }
+
+    // Set up Google OAuth client
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_CALLBACK_URL
+    );
+
+    // Set credentials using the stored token
+    oauth2Client.setCredentials({
+      access_token: req.session.tempOAuthToken
+    });
+
+    // Clean up session
+    delete req.session.tempOAuthToken;
+    delete req.session.tempUserEmail;
+    delete req.session.oauthState;
+    await req.session.save();
+
+    // Redirect to Device B frontend
+    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(req.session.tempUserEmail)}`);
+
+  } catch (error) {
+    console.error("Device Google Login Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
