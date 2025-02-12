@@ -235,10 +235,15 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
     const token = authHeader.split(" ")[1];
 
-    // Verify JWT token
+    // Verify JWT and check admin role
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Find admin user to verify role
+      const adminUser = await User.findOne({ email: decoded.email });
+      if (!adminUser || adminUser.role !== "admin") {
+        return res.status(403).json({ error: "Not authorized as admin" });
+      }
     } catch (err) {
       console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
@@ -246,33 +251,32 @@ app.post("/auth/login-to-device", async (req, res) => {
 
     const { deviceBEmail } = req.body;
     
-    // Find the user and get their OAuth token
-    const deviceBUser = await User.findOne({ email: deviceBEmail });
+    // Find the device B user using schema structure
+    const deviceBUser = await User.findOne({ 
+      email: deviceBEmail,
+      role: "user",
+      oauthToken: { $exists: true, $ne: "" }
+    });
     
-    if (!deviceBUser || !deviceBUser.oauthToken) {
-      return res.status(404).json({ error: "No OAuth token found for this device." });
+    if (!deviceBUser) {
+      return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Store device information in session
-    req.session.deviceBToken = deviceBUser.oauthToken;
-    req.session.deviceBEmail = deviceBEmail;
-    req.session.isAdminAsDevice = true;
-    req.session.originalAdminToken = token;
+    // Create session data matching your schema structure
+    req.session.user = {
+      email: deviceBUser.email,
+      oauthToken: deviceBUser.oauthToken,
+      role: "user",
+      devices: deviceBUser.devices
+    };
 
-    // Save session explicitly
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await req.session.save();
 
-    const redirectUrl = `https://googl-backend.onrender.com/auth/device-session?email=${encodeURIComponent(deviceBEmail)}`;
-    
+    // Redirect to your frontend application
     res.json({ 
       success: true,
-      message: "Session created with device credentials",
-      redirectUrl
+      email: deviceBUser.email,
+      redirectUrl: `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(deviceBUser.email)}`
     });
 
   } catch (error) {
@@ -281,35 +285,37 @@ app.post("/auth/login-to-device", async (req, res) => {
   }
 });
 
-// New endpoint to handle device session creation
-app.get("/auth/device-session", async (req, res) => {
+// Add a middleware to verify sessions
+const verifySession = async (req, res, next) => {
   try {
-    const { email } = req.query;
-    
-    if (!req.session.deviceBToken || !req.session.deviceBEmail || req.session.deviceBEmail !== email) {
-      return res.status(401).json({ error: "Invalid session" });
+    if (!req.session || !req.session.user || !req.session.user.email) {
+      return res.status(401).json({ error: "No valid session found" });
     }
 
-    // Set up the session with device credentials
-    req.session.oauthToken = req.session.deviceBToken;
-    req.session.email = email;
-    req.session.isAuthenticated = true;
-
-    // Save session explicitly
-    await new Promise((resolve, reject) => {
-      req.session.save((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
+    // Verify the user still exists and has valid credentials
+    const user = await User.findOne({ 
+      email: req.session.user.email,
+      oauthToken: { $exists: true, $ne: "" }
     });
 
-    // Redirect to the device B frontend
-    res.redirect(`https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(email)}`);
+    if (!user) {
+      req.session.destroy();
+      return res.status(401).json({ error: "User no longer valid" });
+    }
 
+    next();
   } catch (error) {
-    console.error("Device Session Error:", error);
+    console.error("Session verification error:", error);
     res.status(500).json({ error: "Server error" });
   }
+};
+
+// Use this middleware for protected device routes
+app.get("/auth/verify-device-session", verifySession, (req, res) => {
+  res.json({ 
+    isValid: true, 
+    email: req.session.user.email 
+  });
 });
 
 // Get Token for Device A (Updated: Validate Device First)
