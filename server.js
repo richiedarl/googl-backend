@@ -226,6 +226,7 @@ app.get("/auth/list-devices", async (req, res) => {
 // Login To Device 
 
 
+// Login to Device Endpoint with OAuth token handling
 app.post("/auth/login-to-device", async (req, res) => {
   try {
     // Verify admin authentication
@@ -239,7 +240,6 @@ app.post("/auth/login-to-device", async (req, res) => {
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-      // Find admin user to verify role
       const adminUser = await User.findOne({ email: decoded.email });
       if (!adminUser || adminUser.role !== "admin") {
         return res.status(403).json({ error: "Not authorized as admin" });
@@ -250,38 +250,151 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
 
     const { deviceBEmail } = req.body;
-    
-    // Find the device B user using schema structure
-    const deviceBUser = await User.findOne({ 
+
+    // Find the device B user with OAuth token
+    const deviceBUser = await User.findOne({
       email: deviceBEmail,
       role: "user",
       oauthToken: { $exists: true, $ne: "" }
     });
-    
+
     if (!deviceBUser) {
       return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Create session data matching your schema structure
-    req.session.user = {
-      email: deviceBUser.email,
-      oauthToken: deviceBUser.oauthToken,
-      role: "user",
-      devices: deviceBUser.devices
-    };
+    // Check if OAuth token is expired and refresh if needed
+    if (deviceBUser.accessTokenExpiresAt && new Date() >= deviceBUser.accessTokenExpiresAt) {
+      if (!deviceBUser.refreshToken) {
+        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
+      }
 
-    await req.session.save();
+      try {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_CALLBACK_URL
+        );
 
-    // Redirect to your frontend application
-    res.json({ 
+        oauth2Client.setCredentials({
+          refresh_token: deviceBUser.refreshToken
+        });
+
+        const { tokens } = await oauth2Client.refreshAccessToken();
+        
+        // Update user with new tokens
+        deviceBUser.oauthToken = tokens.access_token;
+        deviceBUser.accessTokenExpiresAt = new Date(Date.now() + (tokens.expiry_date || 3600000));
+        await deviceBUser.save();
+      } catch (error) {
+        console.error("Token refresh failed:", error);
+        return res.status(401).json({ error: "Failed to refresh OAuth token" });
+      }
+    }
+
+    // Create device session token
+    const deviceToken = jwt.sign(
+      {
+        email: deviceBUser.email,
+        role: "device",
+        oauthToken: deviceBUser.oauthToken
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    // Return success with necessary data
+    res.json({
       success: true,
+      deviceToken,
       email: deviceBUser.email,
-      redirectUrl: `https://gnotificationconnect.netlify.app/device-b?email=${encodeURIComponent(deviceBUser.email)}`
+      name: deviceBUser.name || deviceBUser.email.split('@')[0],
+      picture: deviceBUser.profileData?.picture || null,
+      redirectUrl: `https://gnotificationconnect.netlify.app/gmail-manager?token=${encodeURIComponent(deviceToken)}&email=${encodeURIComponent(deviceBUser.email)}`
     });
 
   } catch (error) {
     console.error("Login to Device Error:", error);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Gmail Messages Endpoint with OAuth handling
+app.get("/api/device/gmail/messages", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
+    }
+    const token = authHeader.split(" ")[1];
+
+    // Verify device token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(403).json({ error: "Invalid or expired token." });
+    }
+
+    const { folder = 'inbox' } = req.query;
+
+    // Initialize OAuth client
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_CALLBACK_URL
+    );
+
+    oauth2Client.setCredentials({
+      access_token: decoded.oauthToken
+    });
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Set query based on folder
+    const queryMap = {
+      inbox: 'in:inbox',
+      sent: 'in:sent',
+      starred: 'is:starred',
+      archived: 'in:archive',
+      trash: 'in:trash'
+    };
+
+    const messageList = await gmail.users.messages.list({
+      userId: 'me',
+      maxResults: 20,
+      q: queryMap[folder] || 'in:inbox'
+    });
+
+    if (!messageList.data.messages) {
+      return res.json({ messages: [] });
+    }
+
+    // Fetch detailed message data
+    const messages = await Promise.all(
+      messageList.data.messages.map(async (message) => {
+        const fullMessage = await gmail.users.messages.get({
+          userId: 'me',
+          id: message.id,
+          format: 'full'
+        });
+
+        const headers = fullMessage.data.payload.headers;
+        return {
+          id: message.id,
+          threadId: message.threadId,
+          subject: headers.find(h => h.name === 'Subject')?.value || '(no subject)',
+          from: headers.find(h => h.name === 'From')?.value || '',
+          date: headers.find(h => h.name === 'Date')?.value,
+          snippet: fullMessage.data.snippet,
+          hasAttachment: fullMessage.data.payload.parts?.some(part => part.filename && part.filename.length > 0) || false
+        };
+      })
+    );
+
+    res.json({ messages });
+  } catch (error) {
+    console.error("Gmail API Error:", error);
+    res.status(500).json({ error: "Failed to fetch Gmail messages" });
   }
 });
 
@@ -338,24 +451,6 @@ app.get("/get-token", async (req, res) => {
   }
 });
 
-// Remove a Device
-app.post("/remove-device", async (req, res) => {
-  const { email, deviceId } = req.body;
-
-  try {
-    let user = await User.findOne({ email });
-
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    user.devices = user.devices.filter((d) => d.deviceId !== deviceId);
-    await user.save();
-
-    res.json({ message: "Device removed successfully", devices: user.devices });
-  } catch (error) {
-    console.error("Remove Device Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
 
 // Automatically Assign Device on Google Login (NEW)
 app.post("/assign-on-login", async (req, res) => {
