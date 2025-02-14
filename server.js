@@ -6,6 +6,8 @@ const passport = require("passport");
 const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const User = require("./models/User");
+// Login to Device Endpoint with OAuth token handling
+const { google } = require("googleapis");
 const authRoutes = require("./routes/auth");
 const jwt = require('jsonwebtoken'); // Make sure this is imported at the top
 const connectDB = require("./config/db");
@@ -226,7 +228,9 @@ app.get("/auth/list-devices", async (req, res) => {
 // Login To Device 
 
 
-// Login to Device Endpoint with OAuth token handling
+
+
+// Login to Device B and Redirect to GmailManager
 app.post("/auth/login-to-device", async (req, res) => {
   try {
     // Verify admin authentication
@@ -250,8 +254,9 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
 
     const { deviceBEmail } = req.body;
+    console.log("Looking up device with email:", deviceBEmail);
 
-    // Find the device B user with OAuth token
+    // Find the Device B user with an OAuth token
     const deviceBUser = await User.findOne({
       email: deviceBEmail,
       role: "user",
@@ -262,27 +267,23 @@ app.post("/auth/login-to-device", async (req, res) => {
       return res.status(404).json({ error: "Device not found or no OAuth token available." });
     }
 
-    // Check if OAuth token is expired and refresh if needed
+    // Check if the OAuth token is expired and refresh if needed
     if (deviceBUser.accessTokenExpiresAt && new Date() >= deviceBUser.accessTokenExpiresAt) {
       if (!deviceBUser.refreshToken) {
         return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
       }
-
       try {
         const oauth2Client = new google.auth.OAuth2(
           process.env.GOOGLE_CLIENT_ID,
           process.env.GOOGLE_CLIENT_SECRET,
           process.env.GOOGLE_CALLBACK_URL
         );
-
         oauth2Client.setCredentials({
           refresh_token: deviceBUser.refreshToken
         });
-
         const { tokens } = await oauth2Client.refreshAccessToken();
-        
-        // Update user with new tokens
         deviceBUser.oauthToken = tokens.access_token;
+        // Set the expiry (if tokens.expiry_date is provided as a timestamp, adjust accordingly)
         deviceBUser.accessTokenExpiresAt = new Date(Date.now() + (tokens.expiry_date || 3600000));
         await deviceBUser.save();
       } catch (error) {
@@ -291,34 +292,16 @@ app.post("/auth/login-to-device", async (req, res) => {
       }
     }
 
-    // Create device session token
-    const deviceToken = jwt.sign(
-      {
-        email: deviceBUser.email,
-        role: "device",
-        oauthToken: deviceBUser.oauthToken
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-
-    // Return success with necessary data
-    res.json({
-      success: true,
-      deviceToken,
-      email: deviceBUser.email,
-      name: deviceBUser.name || deviceBUser.email.split('@')[0],
-      picture: deviceBUser.profileData?.picture || null,
-      redirectUrl: `https://gnotificationconnect.netlify.app/gmail-manager?token=${encodeURIComponent(deviceToken)}&email=${encodeURIComponent(deviceBUser.email)}`
-    });
-
+    // Redirect to the GmailManager page on the frontend with the Device B user's email as a query parameter
+    const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?email=${encodeURIComponent(deviceBUser.email)}`;
+    res.redirect(redirectUrl);
   } catch (error) {
     console.error("Login to Device Error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// Gmail Messages Endpoint with OAuth handling
+
 app.get("/api/device/gmail/messages", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -327,15 +310,19 @@ app.get("/api/device/gmail/messages", async (req, res) => {
     }
     const token = authHeader.split(" ")[1];
 
-    // Verify device token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
+      console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    const { folder = 'inbox' } = req.query;
+    // For this example, we assume the decoded token contains an OAuth token field.
+    const accessToken = decoded.oauthToken;
+    if (!accessToken) {
+      return res.status(400).json({ error: "OAuth token not found in token payload." });
+    }
 
     // Initialize OAuth client
     const oauth2Client = new google.auth.OAuth2(
@@ -345,12 +332,13 @@ app.get("/api/device/gmail/messages", async (req, res) => {
     );
 
     oauth2Client.setCredentials({
-      access_token: decoded.oauthToken
+      access_token: accessToken
     });
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // Set query based on folder
+    // Map folder query parameter to Gmail search query
+    const { folder = 'inbox' } = req.query;
     const queryMap = {
       inbox: 'in:inbox',
       sent: 'in:sent',
@@ -398,6 +386,74 @@ app.get("/api/device/gmail/messages", async (req, res) => {
   }
 });
 
+// Send Emails
+
+app.post("/api/device/gmail/send", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
+    }
+    const token = authHeader.split(" ")[1];
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      console.error("JWT verification failed:", err);
+      return res.status(403).json({ error: "Invalid or expired token." });
+    }
+
+    const accessToken = decoded.oauthToken;
+    if (!accessToken) {
+      return res.status(400).json({ error: "OAuth token not found in token payload." });
+    }
+
+    const { userId, to, subject, body } = req.body;
+
+    // Initialize OAuth client
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_CALLBACK_URL
+    );
+
+    oauth2Client.setCredentials({
+      access_token: accessToken
+    });
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Build the email message
+    const messageParts = [
+      'Content-Type: text/plain; charset="UTF-8"',
+      'MIME-Version: 1.0',
+      `To: ${to}`,
+      `Subject: ${subject}`,
+      '',
+      body
+    ];
+    const message = messageParts.join("\r\n");
+
+    const encodedMessage = Buffer.from(message)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw: encodedMessage
+      }
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Send Email Error:", error);
+    res.status(500).json({ error: "Failed to send email" });
+  }
+});
 // Add a middleware to verify sessions
 const verifySession = async (req, res, next) => {
   try {
