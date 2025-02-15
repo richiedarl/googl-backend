@@ -230,7 +230,6 @@ app.get("/auth/list-devices", async (req, res) => {
 
 
 
-// Login to Device B and Redirect to GmailManager
 app.post("/auth/login-to-device", async (req, res) => {
   try {
     // Verify admin authentication
@@ -281,9 +280,10 @@ app.post("/auth/login-to-device", async (req, res) => {
         oauth2Client.setCredentials({
           refresh_token: deviceBUser.refreshToken
         });
+        // Depending on your googleapis version, you might need to use refreshToken() instead.
         const { tokens } = await oauth2Client.refreshAccessToken();
         deviceBUser.oauthToken = tokens.access_token;
-        // Set the expiry (if tokens.expiry_date is provided as a timestamp, adjust accordingly)
+        // Set the expiry using tokens.expiry_date if provided
         deviceBUser.accessTokenExpiresAt = new Date(Date.now() + (tokens.expiry_date || 3600000));
         await deviceBUser.save();
       } catch (error) {
@@ -301,6 +301,7 @@ app.post("/auth/login-to-device", async (req, res) => {
   }
 });
 
+// Fetch Messages
 
 app.get("/api/device/gmail/messages", async (req, res) => {
   try {
@@ -318,7 +319,7 @@ app.get("/api/device/gmail/messages", async (req, res) => {
       return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // For this example, we assume the decoded token contains an OAuth token field.
+    // For this, we assume the decoded token contains an OAuth token field.
     const accessToken = decoded.oauthToken;
     if (!accessToken) {
       return res.status(400).json({ error: "OAuth token not found in token payload." });
