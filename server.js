@@ -258,7 +258,7 @@ app.post("/auth/login-to-device", async (req, res) => {
     // Find the Device B user with an OAuth token
     const deviceBUser = await User.findOne({
       email: deviceBEmail,
-      role: "deviceB", // Changed from "user" to "deviceB" to match your schema
+      role: "user", // Changed from "user" to "deviceB" to match your schema
       oauthToken: { $exists: true, $ne: "" }
     });
 
