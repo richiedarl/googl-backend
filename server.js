@@ -302,9 +302,12 @@ app.post("/auth/login-to-device", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 // Fetch Messages
 
-// Middleware for token verification
+// ---------- Middleware for Token Verification ----------
+
+// This middleware checks the Authorization header, verifies the JWT, and makes sure the token payload contains an OAuth token.
 const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -313,42 +316,100 @@ const verifyToken = async (req, res, next) => {
     }
     const token = authHeader.split(" ")[1];
 
+    let decoded;
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      if (!decoded.oauthToken) {
-        return res.status(400).json({ error: "OAuth token not found in token payload." });
-      }
-      req.user = decoded;
-      next();
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
       console.error("JWT verification failed:", err);
       return res.status(403).json({ error: "Invalid or expired token." });
     }
+
+    if (!decoded.oauthToken) {
+      return res.status(400).json({ error: "OAuth token not found in token payload." });
+    }
+
+    req.user = decoded;
+    next();
   } catch (error) {
     console.error("Token verification error:", error);
     res.status(500).json({ error: "Server error during authentication" });
   }
 };
 
-// Initialize Gmail client
+// ---------- Middleware for Session Verification ----------
+
+const verifySession = async (req, res, next) => {
+  try {
+    if (!req.session || !req.session.user || !req.session.user.email) {
+      return res.status(401).json({ error: "No valid session found" });
+    }
+    const user = await User.findOne({
+      email: req.session.user.email,
+      oauthToken: { $exists: true, $ne: "" }
+    });
+    if (!user) {
+      req.session.destroy();
+      return res.status(401).json({ error: "User no longer valid" });
+    }
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error("Session verification error:", error);
+    res.status(500).json({ error: "Server error during session verification" });
+  }
+};
+
+// ---------- Middleware for Refreshing Token if Needed ----------
+
+const refreshTokenIfNeeded = async (req, res, next) => {
+  try {
+    const user = req.user;
+    // Assume that the token expiry is stored as deviceBUser.accessTokenExpiresAt or user.tokenExpiry
+    if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
+      if (!user.refreshToken) {
+        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
+      }
+      try {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_CALLBACK_URL
+        );
+        oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+        // For newer versions, use refreshToken() instead of refreshAccessToken()
+        const { tokens } = await oauth2Client.refreshAccessToken();
+        user.oauthToken = tokens.access_token;
+        // Set expiry; if tokens.expiry_date is a timestamp (ms since epoch), use that
+        user.accessTokenExpiresAt = new Date(tokens.expiry_date || Date.now() + 3600000);
+        await user.save();
+        req.user.oauthToken = tokens.access_token;
+      } catch (error) {
+        console.error("Token refresh error:", error);
+        return res.status(500).json({ error: "Failed to refresh access token" });
+      }
+    }
+    next();
+  } catch (error) {
+    console.error("Refresh token middleware error:", error);
+    res.status(500).json({ error: "Server error during token refresh" });
+  }
+};
+
+// ---------- Initialize Gmail Client Helper Function ----------
+
 const initializeGmailClient = (accessToken) => {
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.GOOGLE_CALLBACK_URL
   );
-
-  oauth2Client.setCredentials({
-    access_token: accessToken
-  });
-
+  oauth2Client.setCredentials({ access_token: accessToken });
   return google.gmail({ version: 'v1', auth: oauth2Client });
 };
 
-// Helper function to parse email headers
+// ---------- Helper Function to Parse Email Headers ----------
 const parseEmailHeaders = (headers) => {
   const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value;
-  
   return {
     subject: getHeader('Subject') || '(no subject)',
     from: getHeader('From') || '',
@@ -360,12 +421,12 @@ const parseEmailHeaders = (headers) => {
   };
 };
 
+// ---------- Endpoint: Fetch Gmail Messages ----------
+
 app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.user.oauthToken);
     const { folder = 'inbox', q = '' } = req.query;
-    
-    // Map folder query parameter to Gmail search query
     const queryMap = {
       inbox: 'in:inbox',
       sent: 'in:sent',
@@ -373,9 +434,8 @@ app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
       archived: 'in:archive',
       trash: 'in:trash'
     };
-
     const searchQuery = `${queryMap[folder] || 'in:inbox'} ${q}`.trim();
-
+    
     const messageList = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 20,
@@ -386,7 +446,6 @@ app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
       return res.json({ messages: [] });
     }
 
-    // Fetch detailed message data
     const messages = await Promise.all(
       messageList.data.messages.map(async (message) => {
         const fullMessage = await gmail.users.messages.get({
@@ -394,10 +453,7 @@ app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
           id: message.id,
           format: 'full'
         });
-
         const headers = parseEmailHeaders(fullMessage.data.payload.headers);
-        
-        // Check for attachments recursively in the payload parts
         const hasAttachment = (parts) => {
           if (!parts) return false;
           return parts.some(part => {
@@ -406,7 +462,6 @@ app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
             return false;
           });
         };
-
         return {
           id: message.id,
           threadId: message.threadId,
@@ -425,126 +480,58 @@ app.get("/api/device/gmail/messages", verifyToken, async (req, res) => {
   }
 });
 
+// ---------- Endpoint: Send Gmail Message ----------
+
 app.post("/api/device/gmail/send", verifyToken, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.user.oauthToken);
-    const { to, subject, body, attachments = [] } = req.body;
+    const { userId, to, subject, body, attachments = [] } = req.body;
 
     if (!to || !subject || !body) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Create email MIME message
+    // Build the email MIME message
     const messageParts = [
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
-      `From: ${req.user.email}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      `From: ${userId}`,
       `To: ${to}`,
       `Subject: ${subject}`,
       '',
       body
     ];
 
-    // Encode the email
-    const encodedMessage = Buffer.from(messageParts.join('\n'))
+    const rawMessage = messageParts.join('\n');
+    const encodedMessage = Buffer.from(rawMessage)
       .toString('base64')
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
 
-    // Send the email
-    const response = await gmail.users.messages.send({
+    await gmail.users.messages.send({
       userId: 'me',
       requestBody: {
         raw: encodedMessage
       }
     });
 
-    res.json({ 
-      success: true, 
-      messageId: response.data.id,
-      threadId: response.data.threadId
-    });
+    res.json({ success: true });
   } catch (error) {
     console.error("Send Email Error:", error);
-    res.status(500).json({ 
-      error: "Failed to send email",
-      details: error.message 
-    });
+    res.status(500).json({ error: "Failed to send email", details: error.message });
   }
 });
 
-// Add a middleware to verify sessions
-const verifySession = async (req, res, next) => {
-  try {
-    if (!req.session?.user?.email) {
-      return res.status(401).json({ error: "No valid session found" });
-    }
+// ---------- Apply session and token refresh middleware for device Gmail endpoints ----------
 
-    // Verify the user still exists and has valid credentials
-    const user = await User.findOne({ 
-      email: req.session.user.email,
-      oauthToken: { $exists: true, $ne: "" }
-    });
-
-    if (!user) {
-      req.session.destroy();
-      return res.status(401).json({ error: "User no longer valid" });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error("Session verification error:", error);
-    res.status(500).json({ error: "Server error during session verification" });
-  }
-};
-
-// Refresh token middleware
-const refreshTokenIfNeeded = async (req, res, next) => {
-  try {
-    const user = req.user;
-    if (!user.tokenExpiry || new Date(user.tokenExpiry) <= new Date()) {
-      const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_CALLBACK_URL
-      );
-
-      oauth2Client.setCredentials({
-        refresh_token: user.refreshToken
-      });
-
-      const { tokens } = await oauth2Client.refreshAccessToken();
-      
-      await User.updateOne(
-        { _id: user._id },
-        { 
-          oauthToken: tokens.access_token,
-          tokenExpiry: new Date(Date.now() + tokens.expiry_in * 1000)
-        }
-      );
-      
-      req.user.oauthToken = tokens.access_token;
-    }
-    next();
-  } catch (error) {
-    console.error("Token refresh error:", error);
-    res.status(500).json({ error: "Failed to refresh access token" });
-  }
-};
-
-// Apply middlewares to routes that need authentication
 app.use('/api/device/gmail/*', verifySession, refreshTokenIfNeeded);
 
-
-// Use this middleware for protected device routes
+// ---------- Protected Session Verification Endpoint (if needed) ----------
 app.get("/auth/verify-device-session", verifySession, (req, res) => {
-  res.json({ 
-    isValid: true, 
-    email: req.session.user.email 
-  });
+  res.json({ isValid: true, email: req.session.user.email });
 });
+
 
 // Get Token for Device A (Updated: Validate Device First)
 app.get("/get-token", async (req, res) => {
