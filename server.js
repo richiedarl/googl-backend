@@ -312,8 +312,6 @@ app.post("/auth/login-to-device", async (req, res) => {
 });
 
 // Fetch Messages
-
-
 // ---------- Middleware: Verify JWT Token ----------
 const verifyToken = async (req, res, next) => {
   try {
@@ -332,7 +330,6 @@ const verifyToken = async (req, res, next) => {
     if (!decoded.oauthToken) {
       return res.status(400).json({ error: "OAuth token not found in token payload." });
     }
-    // Attach decoded payload to req.user (this might be partial; we'll refresh below)
     req.user = decoded;
     next();
   } catch (error) {
@@ -342,15 +339,12 @@ const verifyToken = async (req, res, next) => {
 };
 
 // ---------- Middleware: Refresh OAuth Token if Needed ----------
-// This middleware fetches the full user from the database and refreshes the token if it’s expired.
 const refreshTokenIfNeeded = async (req, res, next) => {
   try {
-    // Get full user from DB based on the email in the decoded token
     const user = await User.findOne({ email: req.user.email });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
-    // If token expiry exists and is in the past, refresh token
     if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
       if (!user.refreshToken) {
         return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
@@ -362,13 +356,10 @@ const refreshTokenIfNeeded = async (req, res, next) => {
           process.env.GOOGLE_CALLBACK_URL
         );
         oauth2Client.setCredentials({ refresh_token: user.refreshToken });
-        // Depending on your googleapis version, you might use refreshToken() instead:
         const { tokens } = await oauth2Client.refreshAccessToken();
         user.oauthToken = tokens.access_token;
-        // Assume tokens.expiry_date is in milliseconds; otherwise adjust accordingly.
         user.accessTokenExpiresAt = new Date(tokens.expiry_date || Date.now() + 3600000);
         await user.save();
-        // Update req.user so that subsequent middlewares use the refreshed token.
         req.user.oauthToken = tokens.access_token;
       } catch (error) {
         console.error("Token refresh error:", error);
@@ -469,13 +460,12 @@ app.get("/api/device/gmail/messages", verifyToken, refreshTokenIfNeeded, async (
 app.post("/api/device/gmail/send", verifyToken, refreshTokenIfNeeded, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.user.oauthToken);
-    const { userId, to, subject, body, attachments = [] } = req.body;
+    const { userId, to, subject, body } = req.body;
 
     if (!to || !subject || !body) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Build the email MIME message
     const messageParts = [
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset="UTF-8"',
@@ -506,31 +496,6 @@ app.post("/api/device/gmail/send", verifyToken, refreshTokenIfNeeded, async (req
     res.status(500).json({ error: "Failed to send email", details: error.message });
   }
 });
-
-// ---------- Apply Session and Token Refresh Middleware for Other Device Gmail Endpoints ----------
-// (If you have endpoints that rely on express-session, use verifySession and refreshTokenIfNeeded)
-app.use('/api/device/gmail/*', verifySession, refreshTokenIfNeeded);
-
-// ---------- Protected Session Verification Endpoint (if needed) ----------
-app.get("/auth/verify-device-session", verifySession, (req, res) => {
-  res.json({ isValid: true, email: req.session.user.email });
-});
-
-// ---------- Endpoint: Get Token for Device A ----------
-app.get("/get-token", async (req, res) => {
-  const { email, deviceId } = req.query;
-  try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ error: "User not found" });
-    const deviceExists = user.devices.some((device) => device.deviceId === deviceId);
-    if (!deviceExists) return res.status(403).json({ error: "Unauthorized device" });
-    res.json({ googleToken: user.googleToken });
-  } catch (error) {
-    console.error("Get Token Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
-
 
 
 // Automatically Assign Device on Google Login (NEW)
