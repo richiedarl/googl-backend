@@ -310,7 +310,24 @@ res.json({
     res.status(500).json({ error: "Server error" });
   }
 });
-
+const verifyOAuthToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
+    }
+    const oauthToken = authHeader.split(" ")[1];
+    
+    // Here you could optionally validate if the token is a valid Google OAuth token
+    // by making a light request to a Google API
+    
+    req.oauthToken = oauthToken;
+    next();
+  } catch (error) {
+    console.error("OAuth token verification error:", error);
+    res.status(500).json({ error: "Server error during authentication" });
+  }
+};
 // Fetch Messages
 // ---------- Middleware: Verify JWT Token ----------
 const verifyToken = async (req, res, next) => {
@@ -399,7 +416,7 @@ const parseEmailHeaders = (headers) => {
 };
 
 // ---------- Endpoint: Fetch Gmail Messages ----------
-app.get("/api/device/gmail/messages", verifyToken, refreshTokenIfNeeded, async (req, res) => {
+app.get("/api/device/gmail/messages", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.user.oauthToken);
     const { folder = 'inbox', q = '' } = req.query;
@@ -457,19 +474,21 @@ app.get("/api/device/gmail/messages", verifyToken, refreshTokenIfNeeded, async (
 });
 
 // ---------- Endpoint: Send Gmail Message ----------
-app.post("/api/device/gmail/send", verifyToken, refreshTokenIfNeeded, async (req, res) => {
+app.post("/api/device/gmail/send", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
   try {
-    const gmail = initializeGmailClient(req.user.oauthToken);
-    const { userId, to, subject, body } = req.body;
+    const gmail = initializeGmailClient(req.oauthToken);
+    const { to, subject, body } = req.body;
 
     if (!to || !subject || !body) {
       return res.status(400).json({ error: "Missing required fields" });
     }
+    const profile = await gmail.users.getProfile({ userId: 'me' });
+    const fromEmail = profile.data.emailAddress;
 
     const messageParts = [
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset="UTF-8"',
-      `From: ${userId}`,
+      `From: ${fromEmail}`,
       `To: ${to}`,
       `Subject: ${subject}`,
       '',
