@@ -296,15 +296,15 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
 
     // Prepare the redirect URL for GmailManager
-    const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?email=${encodeURIComponent(deviceBUser.email)}`;
+const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?email=${encodeURIComponent(deviceBUser.email)}`;
 
-    // Return a JSON response that includes the redirect URL and the device's OAuth token.
-    res.json({
-      success: true,
-      redirectUrl,
-      message: "Authentication successful",
-      deviceOAuthToken: deviceBUser.oauthToken
-    });
+// Return a JSON response that includes the redirect URL and the device's OAuth token.
+res.json({
+  success: true,
+  redirectUrl,
+  message: "Authentication successful",
+  deviceOAuthToken: deviceBUser.oauthToken
+});
   } catch (error) {
     console.error("Login to Device Error:", error);
     res.status(500).json({ error: "Server error" });
