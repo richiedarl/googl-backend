@@ -230,7 +230,7 @@ app.get("/auth/list-devices", async (req, res) => {
 
 
 
-app.post("/auth/login-to-device", async (req, res) => {
+app.post("/auth/login-with-oauth", async (req, res) => {
   try {
     // Verify admin authentication
     const authHeader = req.headers.authorization;
@@ -296,7 +296,7 @@ app.post("/auth/login-to-device", async (req, res) => {
     }
 
     // Prepare the redirect URL for GmailManager
-const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?email=${encodeURIComponent(deviceBUser.email)}`;
+    const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?token=${encodeURIComponent(deviceBUser.oauthToken)}&email=${encodeURIComponent(deviceBUser.email)}`;
 
 // Return a JSON response that includes the redirect URL and the device's OAuth token.
 res.json({
