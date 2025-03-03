@@ -253,7 +253,7 @@ app.post("/auth/login-with-oauth", async (req, res) => {
     }
 
     const { deviceBEmail } = req.body;
-    console.log("Looking up device with email:", deviceBEmail);
+    console.log("Looking up oauth with email:", deviceBEmail);
 
     // Find the Device B user with an OAuth token.
     // Adjust the role as needed (here we assume OAuth-registered users are stored with role "user").
@@ -266,7 +266,7 @@ app.post("/auth/login-with-oauth", async (req, res) => {
     if (!deviceBUser) {
       return res
         .status(404)
-        .json({ error: "Device not found or no OAuth token available." });
+        .json({ error: "no OAuth token available." });
     }
 
     // Check if the OAuth token is expired and refresh it if necessary.
@@ -310,6 +310,7 @@ res.json({
     res.status(500).json({ error: "Server error" });
   }
 });
+
 const verifyOAuthToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -355,13 +356,16 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
-// ---------- Middleware: Refresh OAuth Token if Needed ----------
+// Refresh Token If Needed
 const refreshTokenIfNeeded = async (req, res, next) => {
   try {
     const user = await User.findOne({ email: req.user.email });
+
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
+
+    // Check if the token is expired
     if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
       if (!user.refreshToken) {
         return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
@@ -373,22 +377,30 @@ const refreshTokenIfNeeded = async (req, res, next) => {
           process.env.GOOGLE_CALLBACK_URL
         );
         oauth2Client.setCredentials({ refresh_token: user.refreshToken });
-        const { tokens } = await oauth2Client.refreshAccessToken();
-        user.oauthToken = tokens.access_token;
-        user.accessTokenExpiresAt = new Date(tokens.expiry_date || Date.now() + 3600000);
+
+        // Get a fresh token
+        const { token } = await oauth2Client.getAccessToken();
+        if (!token) throw new Error("Failed to refresh OAuth token");
+
+        user.oauthToken = token;
+        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // Set 1 hour expiration
         await user.save();
-        req.user.oauthToken = tokens.access_token;
+
+        // Attach refreshed token to request
+        req.user.oauthToken = token;
       } catch (error) {
-        console.error("Token refresh error:", error);
+        console.error("Token refresh failed:", error);
         return res.status(500).json({ error: "Failed to refresh access token" });
       }
     }
+
     next();
   } catch (error) {
     console.error("Refresh token middleware error:", error);
     res.status(500).json({ error: "Server error during token refresh" });
   }
 };
+
 
 // ---------- Initialize Gmail Client Helper Function ----------
 const initializeGmailClient = (accessToken) => {
