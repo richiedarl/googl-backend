@@ -484,9 +484,12 @@ const parseEmailHeaders = (headers) => {
 // ---------- Endpoint: Fetch Gmail Messages ----------
 app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) => {
   try {
+    console.log("🔍 Fetching Gmail messages...");
+    
     const gmail = initializeGmailClient(req.oauthToken);
-    const { folder = "inbox", q = "" } = req.query;
+    console.log("✅ Gmail client initialized successfully!");
 
+    const { folder = "inbox", q = "" } = req.query;
     const queryMap = {
       inbox: "in:inbox",
       sent: "in:sent",
@@ -496,6 +499,9 @@ app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) =>
     };
 
     const searchQuery = `${queryMap[folder] || "in:inbox"} ${q}`.trim();
+    console.log(`📩 Searching Gmail with query: ${searchQuery}`);
+
+    // Request emails
     const messageList = await gmail.users.messages.list({
       userId: "me",
       maxResults: 20,
@@ -503,13 +509,15 @@ app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) =>
     });
 
     if (!messageList.data.messages) {
+      console.log("⚠️ No messages found.");
       return res.json({ messages: [] });
     }
 
+    console.log(`📨 Found ${messageList.data.messages.length} messages!`);
     res.json({ messages: messageList.data.messages });
   } catch (error) {
-    console.error("Gmail API Error:", error);
-    res.status(500).json({ error: "Failed to fetch Gmail messages" });
+    console.error("🔥 Gmail API Error:", error.response?.data || error.message);
+    res.status(500).json({ error: error.response?.data || "Failed to fetch Gmail messages" });
   }
 });
 
