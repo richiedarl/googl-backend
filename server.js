@@ -311,6 +311,50 @@ res.json({
   }
 });
 
+const refreshTokenIfNeeded = async (req, res, next) => {
+  try {
+    const user = await User.findOne({ email: req.user.email });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Check if the token is expired
+    if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
+      if (!user.refreshToken) {
+        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
+      }
+      try {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_CALLBACK_URL
+        );
+        oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+
+        // Get a fresh token
+        const { token } = await oauth2Client.getAccessToken();
+        if (!token) throw new Error("Failed to refresh OAuth token");
+
+        user.oauthToken = token;
+        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // Set 1 hour expiration
+        await user.save();
+
+        // Attach refreshed token to request
+        req.user.oauthToken = token;
+      } catch (error) {
+        console.error("Token refresh failed:", error);
+        return res.status(500).json({ error: "Failed to refresh access token" });
+      }
+    }
+
+    next();
+  } catch (error) {
+    console.error("Refresh token middleware error:", error);
+    res.status(500).json({ error: "Server error during token refresh" });
+  }
+};
+
 const verifyOAuthToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -357,15 +401,23 @@ const verifyToken = async (req, res, next) => {
 };
 
 // Refresh Token If Needed
-const refreshTokenIfNeeded = async (req, res, next) => {
-  try {
-    const user = await User.findOne({ email: req.user.email });
 
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
+const ensureValidOAuthToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
     }
 
-    // Check if the token is expired
+    let oauthToken = authHeader.split(" ")[1];
+
+    // Find the user with this token
+    const user = await User.findOne({ oauthToken });
+    if (!user) {
+      return res.status(404).json({ error: "User not found or token invalid" });
+    }
+
+    // Check if token needs refresh
     if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
       if (!user.refreshToken) {
         return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
@@ -378,26 +430,28 @@ const refreshTokenIfNeeded = async (req, res, next) => {
         );
         oauth2Client.setCredentials({ refresh_token: user.refreshToken });
 
-        // Get a fresh token
+        // Get a fresh access token
         const { token } = await oauth2Client.getAccessToken();
         if (!token) throw new Error("Failed to refresh OAuth token");
 
+        // Update user token in DB
         user.oauthToken = token;
-        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // Set 1 hour expiration
+        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // 1 hour validity
         await user.save();
 
-        // Attach refreshed token to request
-        req.user.oauthToken = token;
+        oauthToken = token; // Use refreshed token
       } catch (error) {
         console.error("Token refresh failed:", error);
         return res.status(500).json({ error: "Failed to refresh access token" });
       }
     }
 
+    // Attach OAuth token to request and continue
+    req.oauthToken = oauthToken;
     next();
   } catch (error) {
-    console.error("Refresh token middleware error:", error);
-    res.status(500).json({ error: "Server error during token refresh" });
+    console.error("OAuth Middleware Error:", error);
+    res.status(500).json({ error: "Server error during token validation" });
   }
 };
 
@@ -428,65 +482,40 @@ const parseEmailHeaders = (headers) => {
 };
 
 // ---------- Endpoint: Fetch Gmail Messages ----------
-app.get("/api/device/gmail/messages", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
+app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) => {
   try {
-    const gmail = initializeGmailClient(req.user.oauthToken);
-    const { folder = 'inbox', q = '' } = req.query;
+    const gmail = initializeGmailClient(req.oauthToken);
+    const { folder = "inbox", q = "" } = req.query;
+
     const queryMap = {
-      inbox: 'in:inbox',
-      sent: 'in:sent',
-      starred: 'is:starred',
-      archived: 'in:archive',
-      trash: 'in:trash'
+      inbox: "in:inbox",
+      sent: "in:sent",
+      starred: "is:starred",
+      archived: "in:archive",
+      trash: "in:trash",
     };
-    const searchQuery = `${queryMap[folder] || 'in:inbox'} ${q}`.trim();
-    
+
+    const searchQuery = `${queryMap[folder] || "in:inbox"} ${q}`.trim();
     const messageList = await gmail.users.messages.list({
-      userId: 'me',
+      userId: "me",
       maxResults: 20,
-      q: searchQuery
+      q: searchQuery,
     });
 
     if (!messageList.data.messages) {
       return res.json({ messages: [] });
     }
 
-    const messages = await Promise.all(
-      messageList.data.messages.map(async (message) => {
-        const fullMessage = await gmail.users.messages.get({
-          userId: 'me',
-          id: message.id,
-          format: 'full'
-        });
-        const headers = parseEmailHeaders(fullMessage.data.payload.headers);
-        const hasAttachment = (parts) => {
-          if (!parts) return false;
-          return parts.some(part => {
-            if (part.filename && part.filename.length > 0) return true;
-            if (part.parts) return hasAttachment(part.parts);
-            return false;
-          });
-        };
-        return {
-          id: message.id,
-          threadId: message.threadId,
-          ...headers,
-          snippet: fullMessage.data.snippet,
-          hasAttachment: hasAttachment(fullMessage.data.payload.parts),
-          labelIds: fullMessage.data.labelIds || []
-        };
-      })
-    );
-
-    res.json({ messages });
+    res.json({ messages: messageList.data.messages });
   } catch (error) {
     console.error("Gmail API Error:", error);
     res.status(500).json({ error: "Failed to fetch Gmail messages" });
   }
 });
 
+
 // ---------- Endpoint: Send Gmail Message ----------
-app.post("/api/device/gmail/send", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
+app.post("/api/device/gmail/send", ensureValidOAuthToken, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.oauthToken);
     const { to, subject, body } = req.body;
