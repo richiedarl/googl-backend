@@ -311,160 +311,100 @@ res.json({
   }
 });
 
+const { google } = require("googleapis");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+
+// ---------- Middleware: Verify OAuth Token ----------
+const verifyOAuthToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      console.error("❌ Missing Authorization header.");
+      return res.status(401).json({ error: "Unauthorized. Missing OAuth token." });
+    }
+
+    const oauthToken = authHeader.split(" ")[1];
+
+    if (!oauthToken) {
+      console.error("❌ OAuth token is empty.");
+      return res.status(401).json({ error: "Invalid OAuth token." });
+    }
+
+    // Attach token to request
+    req.oauthToken = oauthToken;
+    console.log("✅ OAuth token received:", oauthToken);
+    next();
+  } catch (error) {
+    console.error("❌ Error in OAuth token validation:", error);
+    res.status(500).json({ error: "Server error during authentication" });
+  }
+};
+
+// ---------- Middleware: Refresh OAuth Token if Needed ----------
 const refreshTokenIfNeeded = async (req, res, next) => {
   try {
-    const user = await User.findOne({ email: req.user.email });
+    console.log("🔄 Checking if OAuth token needs refresh...");
+
+    const user = await User.findOne({ oauthToken: req.oauthToken });
 
     if (!user) {
+      console.error("❌ User not found for token refresh.");
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Check if the token is expired
     if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
       if (!user.refreshToken) {
-        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
+        console.error("❌ No refresh token available.");
+        return res.status(401).json({ error: "OAuth token expired and no refresh token available." });
       }
+
+      console.log("🔄 Refreshing OAuth token...");
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_CALLBACK_URL
+      );
+
+      oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+
       try {
-        const oauth2Client = new google.auth.OAuth2(
-          process.env.GOOGLE_CLIENT_ID,
-          process.env.GOOGLE_CLIENT_SECRET,
-          process.env.GOOGLE_CALLBACK_URL
-        );
-        oauth2Client.setCredentials({ refresh_token: user.refreshToken });
-
-        // Get a fresh token
-        const { token } = await oauth2Client.getAccessToken();
-        if (!token) throw new Error("Failed to refresh OAuth token");
-
-        user.oauthToken = token;
-        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // Set 1 hour expiration
+        const { tokens } = await oauth2Client.refreshAccessToken();
+        user.oauthToken = tokens.access_token;
+        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // 1-hour expiry
         await user.save();
-
-        // Attach refreshed token to request
-        req.user.oauthToken = token;
+        req.oauthToken = tokens.access_token;
+        console.log("✅ OAuth token refreshed successfully!");
       } catch (error) {
-        console.error("Token refresh failed:", error);
-        return res.status(500).json({ error: "Failed to refresh access token" });
+        console.error("❌ Token refresh failed:", error);
+        return res.status(500).json({ error: "Failed to refresh OAuth token" });
       }
     }
 
     next();
   } catch (error) {
-    console.error("Refresh token middleware error:", error);
+    console.error("❌ Error in refresh token middleware:", error);
     res.status(500).json({ error: "Server error during token refresh" });
   }
 };
 
-const verifyOAuthToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized. Missing token." });
-    }
-    const oauthToken = authHeader.split(" ")[1];
-    
-    // Here you could optionally validate if the token is a valid Google OAuth token
-    // by making a light request to a Google API
-    
-    req.oauthToken = oauthToken;
-    next();
-  } catch (error) {
-    console.error("OAuth token verification error:", error);
-    res.status(500).json({ error: "Server error during authentication" });
-  }
-};
-// Fetch Messages
-// ---------- Middleware: Verify JWT Token ----------
-const verifyToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized. Missing token." });
-    }
-    const token = authHeader.split(" ")[1];
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      console.error("JWT verification failed:", err);
-      return res.status(403).json({ error: "Invalid or expired token." });
-    }
-    if (!decoded.oauthToken) {
-      return res.status(400).json({ error: "OAuth token not found in token payload." });
-    }
-    req.user = decoded;
-    next();
-  } catch (error) {
-    console.error("Token verification error:", error);
-    res.status(500).json({ error: "Server error during authentication" });
-  }
-};
-
-// Refresh Token If Needed
-
-const ensureValidOAuthToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized. Missing token." });
-    }
-
-    let oauthToken = authHeader.split(" ")[1];
-
-    // Find the user with this token
-    const user = await User.findOne({ oauthToken });
-    if (!user) {
-      return res.status(404).json({ error: "User not found or token invalid" });
-    }
-
-    // Check if token needs refresh
-    if (user.accessTokenExpiresAt && new Date(user.accessTokenExpiresAt) <= new Date()) {
-      if (!user.refreshToken) {
-        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
-      }
-      try {
-        const oauth2Client = new google.auth.OAuth2(
-          process.env.GOOGLE_CLIENT_ID,
-          process.env.GOOGLE_CLIENT_SECRET,
-          process.env.GOOGLE_CALLBACK_URL
-        );
-        oauth2Client.setCredentials({ refresh_token: user.refreshToken });
-
-        // Get a fresh access token
-        const { token } = await oauth2Client.getAccessToken();
-        if (!token) throw new Error("Failed to refresh OAuth token");
-
-        // Update user token in DB
-        user.oauthToken = token;
-        user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // 1 hour validity
-        await user.save();
-
-        oauthToken = token; // Use refreshed token
-      } catch (error) {
-        console.error("Token refresh failed:", error);
-        return res.status(500).json({ error: "Failed to refresh access token" });
-      }
-    }
-
-    // Attach OAuth token to request and continue
-    req.oauthToken = oauthToken;
-    next();
-  } catch (error) {
-    console.error("OAuth Middleware Error:", error);
-    res.status(500).json({ error: "Server error during token validation" });
-  }
-};
-
-
-// ---------- Initialize Gmail Client Helper Function ----------
+// ---------- Initialize Gmail Client ----------
 const initializeGmailClient = (accessToken) => {
+  if (!accessToken) {
+    throw new Error("❌ Missing access token for Gmail API.");
+  }
+
+  console.log("🔹 Initializing Gmail client with token:", accessToken);
+
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.GOOGLE_CALLBACK_URL
   );
   oauth2Client.setCredentials({ access_token: accessToken });
-  return google.gmail({ version: 'v1', auth: oauth2Client });
+
+  return google.gmail({ version: "v1", auth: oauth2Client });
 };
 
 // ---------- Helper Function to Parse Email Headers ----------
@@ -481,8 +421,8 @@ const parseEmailHeaders = (headers) => {
   };
 };
 
-// ---------- Endpoint: Fetch Gmail Messages ----------
-app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) => {
+// ---------- Route: Fetch Gmail Messages ----------
+app.get("/api/device/gmail/messages", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
   try {
     console.log("🔍 Fetching Gmail messages...");
     
@@ -514,16 +454,35 @@ app.get("/api/device/gmail/messages", ensureValidOAuthToken, async (req, res) =>
     }
 
     console.log(`📨 Found ${messageList.data.messages.length} messages!`);
-    res.json({ messages: messageList.data.messages });
+
+    // Fetch full email details
+    const messages = await Promise.all(
+      messageList.data.messages.map(async (msg) => {
+        const fullMessage = await gmail.users.messages.get({
+          userId: "me",
+          id: msg.id,
+          format: "full",
+        });
+
+        const headers = parseEmailHeaders(fullMessage.data.payload.headers);
+
+        return {
+          id: msg.id,
+          snippet: fullMessage.data.snippet,
+          ...headers,
+        };
+      })
+    );
+
+    res.json({ messages });
   } catch (error) {
     console.error("🔥 Gmail API Error:", error.response?.data || error.message);
     res.status(500).json({ error: error.response?.data || "Failed to fetch Gmail messages" });
   }
 });
 
-
-// ---------- Endpoint: Send Gmail Message ----------
-app.post("/api/device/gmail/send", ensureValidOAuthToken, async (req, res) => {
+// ---------- Route: Send Gmail Message ----------
+app.post("/api/device/gmail/send", verifyOAuthToken, async (req, res) => {
   try {
     const gmail = initializeGmailClient(req.oauthToken);
     const { to, subject, body } = req.body;
