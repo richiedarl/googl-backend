@@ -311,9 +311,6 @@ res.json({
   }
 });
 
-const { google } = require("googleapis");
-const jwt = require("jsonwebtoken");
-const User = require("../models/User");
 
 // ---------- Middleware: Verify OAuth Token ----------
 const verifyOAuthToken = async (req, res, next) => {
