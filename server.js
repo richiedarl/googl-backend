@@ -351,6 +351,7 @@ const verifyOAuthToken = async (req, res, next) => {
 };
 
 
+
 // ---------- Middleware: Refresh OAuth Token if Needed ----------
 const refreshTokenIfNeeded = async (req, res, next) => {
   try {
@@ -397,6 +398,7 @@ const refreshTokenIfNeeded = async (req, res, next) => {
     res.status(500).json({ error: "Server error during token refresh" });
   }
 };
+
 
 
 // ---------- Initialize Gmail Client ----------
