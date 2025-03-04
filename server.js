@@ -313,42 +313,106 @@ res.json({
 
 
 // ---------- Middleware: Verify OAuth Token ----------
+
+
 const verifyOAuthToken = async (req, res, next) => {
   try {
+    // 1. Extract Authorization Header
     const authHeader = req.headers.authorization;
+    console.log("📝 Full Authorization Header:", authHeader);
 
+    // 2. Check if Authorization header exists and is in correct format
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      console.error("❌ Missing Authorization header.");
-      return res.status(401).json({ error: "Unauthorized. Missing OAuth token." });
+      console.error("❌ Missing or invalid Authorization header.");
+      return res.status(401).json({ 
+        error: "Unauthorized. Missing or invalid OAuth token.",
+        details: "Authorization header must start with 'Bearer '"
+      });
     }
 
+    // 3. Extract the OAuth token
     const oauthToken = authHeader.split(" ")[1];
+    console.log("🔑 Extracted OAuth Token:", oauthToken);
 
+    // 4. Basic token validation
     if (!oauthToken) {
       console.error("❌ OAuth token is empty.");
-      return res.status(401).json({ error: "Invalid OAuth token." });
+      return res.status(401).json({ 
+        error: "Invalid OAuth token.",
+        details: "Token cannot be empty"
+      });
     }
 
-    console.log("✅ Verifying OAuth token with Google...");
-
-    const oauth2Client = new google.auth.OAuth2();
+    // 5. Create OAuth2 client for token verification
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_CALLBACK_URL
+    );
     oauth2Client.setCredentials({ access_token: oauthToken });
 
     try {
+      // 6. Verify token with Google
       const tokenInfo = await oauth2Client.getTokenInfo(oauthToken);
-      console.log("✅ Token is valid:", tokenInfo);
-    } catch (tokenError) {
-      console.error("❌ Invalid OAuth token:", tokenError);
-      return res.status(401).json({ error: "Invalid or expired OAuth token." });
+      console.log("✅ Token Verification Details:", {
+        email: tokenInfo.email,
+        expires_in: tokenInfo.expires_in
+      });
+
+      // 7. Additional custom validations
+      if (!tokenInfo.email) {
+        console.error("❌ Token does not contain user email.");
+        return res.status(401).json({ 
+          error: "Invalid OAuth token.",
+          details: "Token does not contain user information"
+        });
+      }
+
+      // 8. Check token expiration
+      if (tokenInfo.expires_in && tokenInfo.expires_in <= 0) {
+        console.error("❌ OAuth token has expired.");
+        return res.status(401).json({ 
+          error: "Expired OAuth token.",
+          details: "Token is no longer valid"
+        });
+      }
+
+      // 9. Attach verified token information to request
+      req.oauthTokenInfo = {
+        token: oauthToken,
+        email: tokenInfo.email,
+        expiresIn: tokenInfo.expires_in
+      };
+
+      // 10. Proceed to next middleware or route handler
+      next();
+
+    } catch (tokenVerificationError) {
+      console.error("❌ Token Verification Failed:", tokenVerificationError);
+      
+      // Handle specific Google token verification errors
+      if (tokenVerificationError.response && tokenVerificationError.response.status === 400) {
+        return res.status(401).json({ 
+          error: "Invalid OAuth token.",
+          details: "Token could not be verified by Google"
+        });
+      }
+
+      return res.status(500).json({ 
+        error: "Server error during token verification",
+        details: tokenVerificationError.message
+      });
     }
 
-    req.oauthToken = oauthToken;
-    next();
   } catch (error) {
-    console.error("❌ OAuth token verification error:", error);
-    res.status(500).json({ error: "Server error during authentication" });
+    console.error("❌ Unexpected OAuth Token Verification Error:", error);
+    res.status(500).json({ 
+      error: "Unexpected server error during authentication",
+      details: error.message 
+    });
   }
 };
+
 
 
 
