@@ -317,101 +317,27 @@ res.json({
 
 const verifyOAuthToken = async (req, res, next) => {
   try {
-    // 1. Extract Authorization Header
-    const authHeader = req.headers.authorization;
-    console.log("📝 Full Authorization Header:", authHeader);
-
-    // 2. Check if Authorization header exists and is in correct format
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      console.error("❌ Missing or invalid Authorization header.");
-      return res.status(401).json({ 
-        error: "Unauthorized. Missing or invalid OAuth token.",
-        details: "Authorization header must start with 'Bearer '"
-      });
-    }
-
-    // 3. Extract the OAuth token
-    const oauthToken = authHeader.split(" ")[1];
-    console.log("🔑 Extracted OAuth Token:", oauthToken);
-
-    // 4. Basic token validation
-    if (!oauthToken) {
-      console.error("❌ OAuth token is empty.");
-      return res.status(401).json({ 
-        error: "Invalid OAuth token.",
-        details: "Token cannot be empty"
-      });
-    }
-
-    // 5. Create OAuth2 client for token verification
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_CALLBACK_URL
-    );
-    oauth2Client.setCredentials({ access_token: oauthToken });
-
-    try {
-      // 6. Verify token with Google
-      const tokenInfo = await oauth2Client.getTokenInfo(oauthToken);
-      console.log("✅ Token Verification Details:", {
-        email: tokenInfo.email,
-        expires_in: tokenInfo.expires_in
-      });
-
-      // 7. Additional custom validations
-      if (!tokenInfo.email) {
-        console.error("❌ Token does not contain user email.");
-        return res.status(401).json({ 
-          error: "Invalid OAuth token.",
-          details: "Token does not contain user information"
-        });
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+          console.error("❌ Missing Authorization Header");
+          return res.status(401).json({ error: "Unauthorized. Missing OAuth token." });
       }
 
-      // 8. Check token expiration
-      if (tokenInfo.expires_in && tokenInfo.expires_in <= 0) {
-        console.error("❌ OAuth token has expired.");
-        return res.status(401).json({ 
-          error: "Expired OAuth token.",
-          details: "Token is no longer valid"
-        });
+      const oauthToken = authHeader.split(" ")[1];
+      if (!oauthToken) {
+          console.error("❌ OAuth Token is empty.");
+          return res.status(401).json({ error: "Invalid OAuth token." });
       }
 
-      // 9. Attach verified token information to request
-      req.oauthTokenInfo = {
-        token: oauthToken,
-        email: tokenInfo.email,
-        expiresIn: tokenInfo.expires_in
-      };
-
-      // 10. Proceed to next middleware or route handler
+      console.log("✅ OAuth Token Received in Backend:", oauthToken);
+      req.oauthToken = oauthToken;
       next();
-
-    } catch (tokenVerificationError) {
-      console.error("❌ Token Verification Failed:", tokenVerificationError);
-      
-      // Handle specific Google token verification errors
-      if (tokenVerificationError.response && tokenVerificationError.response.status === 400) {
-        return res.status(401).json({ 
-          error: "Invalid OAuth token.",
-          details: "Token could not be verified by Google"
-        });
-      }
-
-      return res.status(500).json({ 
-        error: "Server error during token verification",
-        details: tokenVerificationError.message
-      });
-    }
-
   } catch (error) {
-    console.error("❌ Unexpected OAuth Token Verification Error:", error);
-    res.status(500).json({ 
-      error: "Unexpected server error during authentication",
-      details: error.message 
-    });
+      console.error("❌ OAuth Token Verification Error:", error);
+      res.status(500).json({ error: "Server error during authentication" });
   }
 };
+
 
 
 
@@ -497,50 +423,54 @@ const parseEmailHeaders = (headers) => {
 };
 
 // ---------- Route: Fetch Gmail Messages ----------
-app.get("/api/device/gmail/messages", verifyOAuthToken, refreshTokenIfNeeded, async (req, res) => {
+app.get("/api/device/gmail/messages", verifyOAuthToken, async (req, res) => {
   try {
-    console.log("🔍 Fetching Gmail messages...");
-    console.log("🛠 OAuth Token Received:", req.oauthToken);  // ✅ LOGGING THE TOKEN
+      console.log("📩 Fetching Gmail Messages...");
 
-    if (!req.oauthToken) {
-      console.error("❌ No OAuth token provided.");
-      return res.status(401).json({ error: "Missing OAuth token." });
-    }
+      const gmail = google.gmail({
+          version: "v1",
+          auth: new google.auth.OAuth2(
+              process.env.GOOGLE_CLIENT_ID,
+              process.env.GOOGLE_CLIENT_SECRET,
+              process.env.GOOGLE_CALLBACK_URL
+          ),
+      });
 
-    const gmail = initializeGmailClient(req.oauthToken);
-    console.log("✅ Gmail client initialized successfully!");
+      gmail.auth.setCredentials({ access_token: req.oauthToken });
 
-    const { folder = "inbox", q = "" } = req.query;
-    const queryMap = {
-      inbox: "in:inbox",
-      sent: "in:sent",
-      starred: "is:starred",
-      archived: "in:archive",
-      trash: "in:trash",
-    };
+      console.log("✅ Initialized Gmail API Client.");
 
-    const searchQuery = `${queryMap[folder] || "in:inbox"} ${q}`.trim();
-    console.log(`📩 Searching Gmail with query: ${searchQuery}`);
+      const { folder = "inbox", q = "" } = req.query;
+      const queryMap = {
+          inbox: "in:inbox",
+          sent: "in:sent",
+          starred: "is:starred",
+          archived: "in:archive",
+          trash: "in:trash",
+      };
 
-    // Request emails
-    const messageList = await gmail.users.messages.list({
-      userId: "me",
-      maxResults: 20,
-      q: searchQuery,
-    });
+      const searchQuery = `${queryMap[folder] || "in:inbox"} ${q}`.trim();
+      console.log(`🔎 Gmail Search Query: ${searchQuery}`);
 
-    if (!messageList.data.messages) {
-      console.log("⚠️ No messages found.");
-      return res.json({ messages: [] });
-    }
+      const messageList = await gmail.users.messages.list({
+          userId: "me",
+          maxResults: 20,
+          q: searchQuery,
+      });
 
-    console.log(`📨 Found ${messageList.data.messages.length} messages!`);
-    res.json({ messages: messageList.data.messages });
+      if (!messageList.data.messages) {
+          console.log("⚠️ No messages found.");
+          return res.json({ messages: [] });
+      }
+
+      console.log(`📨 Retrieved ${messageList.data.messages.length} messages.`);
+      res.json({ messages: messageList.data.messages });
   } catch (error) {
-    console.error("🔥 Gmail API Error:", error?.response?.data || error.message);
-    res.status(500).json({ error: error?.response?.data || "Failed to fetch Gmail messages" });
+      console.error("🔥 Gmail API Error:", error.response?.data || error.message);
+      res.status(500).json({ error: error.response?.data || "Failed to fetch Gmail messages" });
   }
 });
+
 
 
 // ---------- Route: Send Gmail Message ----------
