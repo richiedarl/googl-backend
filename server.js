@@ -59,8 +59,8 @@ passport.use(
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.compose"
       ],
-      accessType: "offline",
-      prompt: "consent" // Forces new token every login
+      accessType: "offline",  // Ensures refresh token is received
+      prompt: "consent" // Forces Google to show the consent screen again
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
@@ -94,6 +94,7 @@ passport.use(
     }
   )
 );
+
 
   
 passport.serializeUser((user, done) => done(null, user.id));
