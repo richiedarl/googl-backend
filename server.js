@@ -232,214 +232,187 @@ app.get("/auth/list-devices", async (req, res) => {
 
 app.post("/auth/login-with-oauth", async (req, res) => {
   try {
-    // 1. Verify Admin Authentication
+    // Verify admin authentication
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ 
-        error: "Unauthorized. Missing admin token.",
-        details: "Authorization header must start with 'Bearer'"
-      });
+      return res.status(401).json({ error: "Unauthorized. Missing token." });
     }
+    const token = authHeader.split(" ")[1];
 
-    const adminToken = authHeader.split(" ")[1];
-
-    // 2. Verify JWT and Check Admin Role
+    // Verify JWT and check admin role
     let decoded;
     try {
-      decoded = jwt.verify(adminToken, process.env.JWT_SECRET);
-      
-      const adminUser = await User.findOne({ 
-        email: decoded.email, 
-        role: "admin" 
-      });
-
-      if (!adminUser) {
-        return res.status(403).json({ 
-          error: "Not authorized as admin",
-          details: "User not found or insufficient permissions"
-        });
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const adminUser = await User.findOne({ email: decoded.email });
+      if (!adminUser || adminUser.role !== "admin") {
+        return res.status(403).json({ error: "Not authorized as admin" });
       }
     } catch (err) {
-      console.error("JWT Verification Failed:", err);
-      return res.status(403).json({ 
-        error: "Invalid or expired admin token",
-        details: err.message 
-      });
+      console.error("JWT verification failed:", err);
+      return res.status(403).json({ error: "Invalid or expired token." });
     }
 
-    // 3. Extract Device B User Email
     const { deviceBEmail } = req.body;
-    if (!deviceBEmail) {
-      return res.status(400).json({
-        error: "Missing device email",
-        details: "Device B email is required"
-      });
-    }
+    console.log("Looking up oauth with email:", deviceBEmail);
 
-    console.log("🔍 Looking up OAuth user with email:", deviceBEmail);
-
-    // 4. Find Device B User with OAuth Token
+    // Find the Device B user with an OAuth token.
+    // Adjust the role as needed (here we assume OAuth-registered users are stored with role "user").
     const deviceBUser = await User.findOne({
       email: deviceBEmail,
       role: "user",
-      oauthToken: { $exists: true, $ne: "" },
-      refreshToken: { $exists: true, $ne: "" } // Ensure refresh token exists
+      oauthToken: { $exists: true, $ne: "" }
     });
 
     if (!deviceBUser) {
-      return res.status(404).json({ 
-        error: "No OAuth token available",
-        details: "No user found with valid OAuth credentials"
-      });
+      return res
+        .status(404)
+        .json({ error: "no OAuth token available." });
     }
 
-    // 5. Token Refresh Mechanism
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_CALLBACK_URL
-    );
-
-    // Comprehensive token expiration check
-    const isTokenExpired = !deviceBUser.accessTokenExpiresAt || 
-      new Date() >= new Date(deviceBUser.accessTokenExpiresAt);
-
-    if (isTokenExpired) {
+    // Check if the OAuth token is expired and refresh it if necessary.
+    if (deviceBUser.accessTokenExpiresAt && new Date() >= deviceBUser.accessTokenExpiresAt) {
+      if (!deviceBUser.refreshToken) {
+        return res.status(401).json({ error: "OAuth token expired and no refresh token available" });
+      }
       try {
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_CALLBACK_URL
+        );
         oauth2Client.setCredentials({
           refresh_token: deviceBUser.refreshToken
         });
-
-        // Refresh the access token
-        const { credentials } = await oauth2Client.refreshAccessToken();
-
-        // Comprehensive token update
-        deviceBUser.oauthToken = credentials.access_token;
-        deviceBUser.accessTokenExpiresAt = new Date(
-          Date.now() + (credentials.expiry_date || 3600000) // 1 hour default
-        );
-
+        // For newer versions of googleapis, use refreshToken() instead of refreshAccessToken()
+        const { tokens } = await oauth2Client.refreshAccessToken();
+        deviceBUser.oauthToken = tokens.access_token;
+        // Set the new expiry time; adjust if tokens.expiry_date is in ms or seconds
+        deviceBUser.accessTokenExpiresAt = new Date(Date.now() + (tokens.expiry_date || 3600000));
         await deviceBUser.save();
-
-        console.log("✅ OAuth Token Refreshed Successfully");
-      } catch (refreshError) {
-        console.error("Token Refresh Error:", refreshError);
-        return res.status(401).json({ 
-          error: "Failed to refresh OAuth token",
-          details: refreshError.message
-        });
+      } catch (error) {
+        console.error("Token refresh failed:", error);
+        return res.status(401).json({ error: "Failed to refresh OAuth token" });
       }
     }
 
-    // 6. Validate OAuth Token with Google
-    try {
-      oauth2Client.setCredentials({ access_token: deviceBUser.oauthToken });
-      const tokenInfo = await oauth2Client.getTokenInfo(deviceBUser.oauthToken);
-      
-      console.log("🔐 Token Validation:", {
-        email: tokenInfo.email,
-        expiresIn: tokenInfo.expires_in
-      });
+    // Prepare the redirect URL for GmailManager
+    const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?token=${encodeURIComponent(deviceBUser.oauthToken)}&email=${encodeURIComponent(deviceBUser.email)}`;
 
-      // Additional validation to ensure token matches user
-      if (tokenInfo.email !== deviceBUser.email) {
-        return res.status(401).json({
-          error: "Token validation failed",
-          details: "Token email does not match user email"
-        });
-      }
-    } catch (tokenValidationError) {
-      console.error("Token Validation Failed:", tokenValidationError);
-      return res.status(401).json({ 
-        error: "Invalid OAuth token",
-        details: "Could not validate token with Google"
-      });
-    }
-
-    // 7. Prepare Redirect URL with additional security
-    const redirectUrl = `https://gnotificationconnect.netlify.app/gmail-manager?token=${encodeURIComponent(
-      deviceBUser.oauthToken.trim()
-    )}&email=${encodeURIComponent(deviceBUser.email)}&timestamp=${Date.now()}`;
-
-    // 8. Return Success Response
-    res.json({
-      success: true,
-      redirectUrl,
-      message: "Authentication successful",
-      deviceOAuthToken: deviceBUser.oauthToken.trim(),
-      userEmail: deviceBUser.email
-    });
-
+// Return a JSON response that includes the redirect URL and the device's OAuth token.
+res.json({
+  success: true,
+  redirectUrl,
+  message: "Authentication successful",
+  deviceOAuthToken: deviceBUser.oauthToken
+});
   } catch (error) {
     console.error("Login to Device Error:", error);
-    res.status(500).json({ 
-      error: "Server error during OAuth login",
-      details: error.message 
-    });
+    res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // ---------- Middleware: Verify OAuth Token ----------
 
 
 const verifyOAuthToken = async (req, res, next) => {
   try {
+    // 1. Extract Authorization Header
     const authHeader = req.headers.authorization;
-    console.log("🔍 Full Authorization Header:", authHeader);
+    console.log("📝 Full Authorization Header:", authHeader);
 
+    // 2. Check if Authorization header exists and is in correct format
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      console.error("❌ Missing or invalid Authorization header.");
       return res.status(401).json({ 
         error: "Unauthorized. Missing or invalid OAuth token.",
         details: "Authorization header must start with 'Bearer '"
       });
     }
 
+    // 3. Extract the OAuth token
     const oauthToken = authHeader.split(" ")[1];
-    console.log("🔑 Extracted OAuth Token (first 10 chars):", oauthToken.substring(0, 10));
+    console.log("🔑 Extracted OAuth Token:", oauthToken);
 
-    // Additional detailed logging
-    if (!oauthToken || oauthToken.length < 10) {
-      console.error("❌ OAuth token appears to be invalid or too short");
+    // 4. Basic token validation
+    if (!oauthToken) {
+      console.error("❌ OAuth token is empty.");
       return res.status(401).json({ 
         error: "Invalid OAuth token.",
-        details: "Token is missing or too short"
+        details: "Token cannot be empty"
       });
     }
 
-    // Use Google's token info endpoint for verification
-    const oauth2Client = new google.auth.OAuth2();
+    // 5. Create OAuth2 client for token verification
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_CALLBACK_URL
+    );
     oauth2Client.setCredentials({ access_token: oauthToken });
 
     try {
+      // 6. Verify token with Google
       const tokenInfo = await oauth2Client.getTokenInfo(oauthToken);
-      console.log("✅ Token Info:", {
+      console.log("✅ Token Verification Details:", {
         email: tokenInfo.email,
         expires_in: tokenInfo.expires_in
       });
 
-      // Attach verified token info to request
+      // 7. Additional custom validations
+      if (!tokenInfo.email) {
+        console.error("❌ Token does not contain user email.");
+        return res.status(401).json({ 
+          error: "Invalid OAuth token.",
+          details: "Token does not contain user information"
+        });
+      }
+
+      // 8. Check token expiration
+      if (tokenInfo.expires_in && tokenInfo.expires_in <= 0) {
+        console.error("❌ OAuth token has expired.");
+        return res.status(401).json({ 
+          error: "Expired OAuth token.",
+          details: "Token is no longer valid"
+        });
+      }
+
+      // 9. Attach verified token information to request
       req.oauthTokenInfo = {
         token: oauthToken,
         email: tokenInfo.email,
         expiresIn: tokenInfo.expires_in
       };
 
+      // 10. Proceed to next middleware or route handler
       next();
-    } catch (tokenError) {
-      console.error("❌ Token Verification Failed:", tokenError);
-      return res.status(401).json({ 
-        error: "Invalid or expired OAuth token",
-        details: tokenError.message
+
+    } catch (tokenVerificationError) {
+      console.error("❌ Token Verification Failed:", tokenVerificationError);
+      
+      // Handle specific Google token verification errors
+      if (tokenVerificationError.response && tokenVerificationError.response.status === 400) {
+        return res.status(401).json({ 
+          error: "Invalid OAuth token.",
+          details: "Token could not be verified by Google"
+        });
+      }
+
+      return res.status(500).json({ 
+        error: "Server error during token verification",
+        details: tokenVerificationError.message
       });
     }
+
   } catch (error) {
-    console.error("❌ Unexpected Token Verification Error:", error);
+    console.error("❌ Unexpected OAuth Token Verification Error:", error);
     res.status(500).json({ 
-      error: "Server error during authentication",
+      error: "Unexpected server error during authentication",
       details: error.message 
     });
   }
 };
+
 
 
 // ---------- Middleware: Refresh OAuth Token if Needed ----------
