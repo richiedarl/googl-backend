@@ -46,40 +46,53 @@ app.use("/auth", authRoutes);
 const { Strategy: GoogleStrategy } = require("passport-google-oauth20");
 
 passport.use(
-    new GoogleStrategy(
-      {
-        clientID: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: "https://googl-backend.onrender.com/auth/google/callback",
-      },
-      async (accessToken, refreshToken, profile, done) => {
-        try {
-          console.log("Google OAuth Profile:", profile);
-          console.log("Access Token:", accessToken);
-  
-          let user = await User.findOne({ email: profile.emails[0].value });
-  
-          if (!user) {
-            user = new User({
-              email: profile.emails[0].value,
-              oauthToken: accessToken, // Fix field name
-              devices: [], // Ensure consistency
-            });
-            await user.save();
-          } else {
-            user.oauthToken = accessToken; // Fix field name
-            await user.save();
-          }
-  
-          done(null, user);
-        } catch (error) {
-          console.error("OAuth error:", error);
-          done(error, null);
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: "https://googl-backend.onrender.com/auth/google/callback",
+      scope: [
+        "profile",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose"
+      ],
+      accessType: "offline", // Ensures a refresh token is provided
+      prompt: "consent" // Forces user to re-consent if scopes change
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        console.log("✅ Google OAuth Profile:", profile);
+        console.log("🔑 Access Token:", accessToken);
+        console.log("🔄 Refresh Token:", refreshToken);
+
+        let user = await User.findOne({ email: profile.emails[0].value });
+
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            oauthToken: accessToken,
+            refreshToken: refreshToken || null, // Store refresh token
+            accessTokenExpiresAt: new Date(Date.now() + 3600000) // 1-hour expiry
+          });
+        } else {
+          user.oauthToken = accessToken;
+          user.refreshToken = refreshToken || user.refreshToken; // Keep old refresh token if new one isn’t provided
+          user.accessTokenExpiresAt = new Date(Date.now() + 3600000);
         }
+
+        await user.save();
+        done(null, user);
+      } catch (error) {
+        console.error("❌ OAuth Login Error:", error);
+        done(error, null);
       }
-    )
-  );
-  
+    }
+  )
+);
+
   
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
