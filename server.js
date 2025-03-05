@@ -59,14 +59,14 @@ passport.use(
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.compose"
       ],
-      accessType: "offline", // Ensures a refresh token is provided
-      prompt: "consent" // Forces user to re-consent if scopes change
+      accessType: "offline",
+      prompt: "consent" // Forces new token every login
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
         console.log("✅ Google OAuth Profile:", profile);
         console.log("🔑 Access Token:", accessToken);
-        console.log("🔄 Refresh Token:", refreshToken);
+        console.log("🔄 Refresh Token:", refreshToken || "No new refresh token");
 
         let user = await User.findOne({ email: profile.emails[0].value });
 
@@ -74,12 +74,14 @@ passport.use(
           user = new User({
             email: profile.emails[0].value,
             oauthToken: accessToken,
-            refreshToken: refreshToken || null, // Store refresh token
-            accessTokenExpiresAt: new Date(Date.now() + 3600000) // 1-hour expiry
+            refreshToken: refreshToken || null,
+            accessTokenExpiresAt: new Date(Date.now() + 3600000)
           });
         } else {
           user.oauthToken = accessToken;
-          user.refreshToken = refreshToken || user.refreshToken; // Keep old refresh token if new one isn’t provided
+          if (refreshToken) {
+            user.refreshToken = refreshToken; // Ensure refresh token is updated
+          }
           user.accessTokenExpiresAt = new Date(Date.now() + 3600000);
         }
 
@@ -382,11 +384,11 @@ const refreshTokenIfNeeded = async (req, res, next) => {
       oauth2Client.setCredentials({ refresh_token: user.refreshToken });
 
       try {
-        const { credentials } = await oauth2Client.refreshAccessToken();
-        user.oauthToken = credentials.access_token;
+        const { tokens } = await oauth2Client.refreshAccessToken();
+        user.oauthToken = tokens.access_token;
         user.accessTokenExpiresAt = new Date(Date.now() + 3600000); // 1-hour expiry
         await user.save();
-        req.oauthToken = credentials.access_token;
+        req.oauthToken = tokens.access_token;
         console.log("✅ OAuth token refreshed successfully!");
       } catch (error) {
         console.error("❌ Token refresh failed:", error);
@@ -400,6 +402,7 @@ const refreshTokenIfNeeded = async (req, res, next) => {
     res.status(500).json({ error: "Server error during token refresh" });
   }
 };
+
 
 
 
@@ -421,6 +424,7 @@ const initializeGmailClient = (accessToken) => {
   return google.gmail({ version: "v1", auth: oauth2Client });
 };
 
+
 // ---------- Helper Function to Parse Email Headers ----------
 const parseEmailHeaders = (headers) => {
   const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value;
@@ -436,7 +440,7 @@ const parseEmailHeaders = (headers) => {
 };
 
 // ---------- Route: Fetch Gmail Messages ----------
-app.get("/api/device/gmail/messages", verifyOAuthToken, async (req, res) => {
+app.get("/api/device/gmail/messages", refreshTokenIfNeeded, verifyOAuthToken, async (req, res) => {
   try {
       console.log("📩 Fetching Gmail Messages...");
       console.log("📌 OAuth Token Received:", req.oauthToken);
